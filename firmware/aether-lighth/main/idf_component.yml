@@ -1,0 +1,2 @@
+dependencies:
+  espressif/esp32_p4_function_ev_board: "^5.2.3"
