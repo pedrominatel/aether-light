@@ -68,12 +68,4 @@ menu "Network Manager"
 
     endmenu
 
-    menu "HTTP UI"
-
-        config NETWORK_MANAGER_HTTP_PORT
-            int "HTTP server port"
-            default 80
-
-    endmenu
-
 endmenu

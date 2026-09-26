@@ -2935,8 +2935,7 @@ CONFIG_FATFS_DONT_TRUST_LAST_ALLOC=0
 #
 # default:
 # CONFIG_FREERTOS_UNICORE is not set
-# default:
-CONFIG_FREERTOS_HZ=100
+CONFIG_FREERTOS_HZ=1000
 # default:
 # CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE is not set
 # default:
@@ -4244,14 +4243,14 @@ CONFIG_NETWORK_MANAGER_WIFI_DEFAULT_SSID=""
 # default:
 CONFIG_NETWORK_MANAGER_WIFI_DEFAULT_PASSWORD=""
 # end of WiFi Fallback
+# end of Network Manager
 
 #
-# HTTP UI
+# Web Interface
 #
 # default:
-CONFIG_NETWORK_MANAGER_HTTP_PORT=80
-# end of HTTP UI
-# end of Network Manager
+CONFIG_WEB_INTERFACE_HTTP_PORT=80
+# end of Web Interface
 
 #
 # CMake Utilities

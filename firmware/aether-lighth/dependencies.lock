@@ -406,11 +406,24 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 9.6.0~1
+  pedrominatel/ultraled:
+    component_hash: bb885b92d602b39d22ae9d0224245ca91169daa3af831f393ff3821261c840fa
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=6.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 0.3.0
 direct_dependencies:
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_hosted
 - espressif/esp_wifi_remote
 - espressif/ip101
-manifest_hash: ab64271eb3c11767fedad816ebee7099d379f9148b4c39ac1b4c8daf22bd9210
+- pedrominatel/ultraled
+manifest_hash: 50597b88d498cbfcf185ac3a273a12b979a6c0911983976d90b9d0375b71217b
 target: esp32p4
 version: 3.0.0
