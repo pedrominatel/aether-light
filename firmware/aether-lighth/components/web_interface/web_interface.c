@@ -1,6 +1,7 @@
 #include "web_interface.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -9,12 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ddp_manager.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/inet.h"
 #include "network_manager.h"
 #include "sdkconfig.h"
 #include "ultraled_manager.h"
@@ -80,6 +83,22 @@ static const char *ultraled_state_to_string(ultraled_manager_state_t state)
     case ULTRALED_MANAGER_ACTIVE:
         return "Active";
     case ULTRALED_MANAGER_ERROR:
+        return "Error";
+    default:
+        return "Unknown";
+    }
+}
+
+static const char *ddp_state_to_string(ddp_manager_state_t state)
+{
+    switch (state) {
+    case DDP_MANAGER_DISABLED:
+        return "Disabled";
+    case DDP_MANAGER_WAITING_NETWORK:
+        return "Waiting for network";
+    case DDP_MANAGER_RUNNING:
+        return "Running";
+    case DDP_MANAGER_ERROR:
         return "Error";
     default:
         return "Unknown";
@@ -218,6 +237,7 @@ static esp_err_t begin_page(httpd_req_t *req, const char *title, const char *act
         "<a href='/status' class='%s'>Status</a>"
         "<a href='/network' class='%s'>Network</a>"
         "<a href='/led-channels' class='%s'>LED Channels</a>"
+        "<a href='/ddp' class='%s'>DDP / xLights</a>"
         "<a href='/configuration' class='%s'>Configuration</a>"
         "<a href='/reboot' class='%s'>Reboot</a>"
         "</nav></header><main><h2>%s</h2>",
@@ -225,6 +245,7 @@ static esp_err_t begin_page(httpd_req_t *req, const char *title, const char *act
         strcmp(active_path, "/status") == 0 ? "active" : "",
         strcmp(active_path, "/network") == 0 ? "active" : "",
         strcmp(active_path, "/led-channels") == 0 ? "active" : "",
+        strcmp(active_path, "/ddp") == 0 ? "active" : "",
         strcmp(active_path, "/configuration") == 0 ? "active" : "",
         strcmp(active_path, "/reboot") == 0 ? "active" : "",
         title);
@@ -331,6 +352,23 @@ static bool form_get_long(const char *body, const char *key, long *value)
     return true;
 }
 
+static bool form_get_u32(const char *body, const char *key, uint32_t *value)
+{
+    char text[24];
+    if (!form_get_value(body, key, text, sizeof(text)) || text[0] == '\0' || text[0] == '-') {
+        return false;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || parsed > UINT32_MAX) {
+        return false;
+    }
+    *value = (uint32_t)parsed;
+    return true;
+}
+
 static esp_err_t receive_form_body(httpd_req_t *req, char **body_out)
 {
     int total = req->content_len;
@@ -385,6 +423,8 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     ultraled_manager_get_config(&led_config);
     ultraled_manager_state_t led_state = ultraled_manager_get_state();
     esp_err_t led_error = ultraled_manager_get_last_error();
+    ddp_manager_status_t ddp_status;
+    ddp_manager_get_status(&ddp_status);
 
     esp_err_t err = begin_page(req, "Status", "/status");
     if (err == ESP_OK) {
@@ -393,12 +433,16 @@ static esp_err_t status_get_handler(httpd_req_t *req)
             "<div class='kv'><div class='muted'>Network</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>IP address</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>UltraLED</div><div>%s%s%s</div></div>"
+            "<div class='kv'><div class='muted'>DDP</div><div>%s%s%s</div></div>"
             "<div class='kv'><div class='muted'>Configured model</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>Configured channels</div><div>%u</div></div>"
             "</div></div>",
             network_state_to_string(network_manager_get_state()), ip, ultraled_state_to_string(led_state),
             led_state == ULTRALED_MANAGER_ERROR ? ": " : "",
             led_state == ULTRALED_MANAGER_ERROR ? esp_err_to_name(led_error) : "",
+            ddp_state_to_string(ddp_status.state),
+            ddp_status.state == DDP_MANAGER_ERROR ? ": " : "",
+            ddp_status.state == DDP_MANAGER_ERROR ? esp_err_to_name(ddp_status.last_error) : "",
             model_to_string(led_config.led_model), led_config.channel_count);
     }
     return err == ESP_OK ? end_page(req) : err;
@@ -762,6 +806,145 @@ static esp_err_t led_channels_post_handler(httpd_req_t *req)
     return err;
 }
 
+static esp_err_t ddp_get_handler(httpd_req_t *req)
+{
+    ddp_manager_config_t config;
+    ddp_manager_get_config(&config);
+    ddp_manager_status_t status;
+    ddp_manager_get_status(&status);
+
+    struct in_addr source_address = { .s_addr = status.last_source_ipv4 };
+    const char *source_text = status.last_source_ipv4 == 0 ? "-" : inet_ntoa(source_address);
+    const char *transport = config.transports == (DDP_TRANSPORT_UDP | DDP_TRANSPORT_TCP)
+                                ? "UDP + TCP"
+                                : (config.transports == DDP_TRANSPORT_TCP ? "TCP" : "UDP");
+
+    esp_err_t err = begin_page(req, "DDP / xLights", "/ddp");
+    if (err == ESP_OK) {
+        err = send_chunkf(req,
+            "<div class='card'><h3>DDP configuration</h3>"
+            "<p class='muted'>Distributed Display Protocol listens on the standard port 4048. "
+            "Settings are stored in NVS and applied after restart.</p>"
+            "<form method='post' action='/ddp'>"
+            "<label><input type='checkbox' name='enabled' value='1' %s>Enable DDP</label>"
+            "<div class='grid'><div><label for='transport'>Transport</label>"
+            "<select id='transport' name='transport'>"
+            "<option value='1' %s>UDP (recommended for xLights)</option>"
+            "<option value='2' %s>TCP</option>"
+            "<option value='3' %s>UDP + TCP</option></select></div>"
+            "<div><label>Protocol port</label><input value='4048' disabled></div>"
+            "<div><label for='start_channel'>xLights start channel</label>"
+            "<input id='start_channel' name='start_channel' type='number' min='1' max='4294944255' value='%" PRIu32 "' required></div>"
+            "<div><label for='frame_policy'>Frame policy</label><select id='frame_policy' name='frame_policy'>"
+            "<option value='0' %s>xLights complete frame</option>"
+            "<option value='1' %s>DDP partial updates</option></select></div>"
+            "<div><label for='frame_timeout'>Frame timeout (ms)</label>"
+            "<input id='frame_timeout' name='frame_timeout' type='number' min='50' max='5000' value='%u' required></div>"
+            "<div><label for='source_timeout'>Controller timeout (ms)</label>"
+            "<input id='source_timeout' name='source_timeout' type='number' min='100' max='60000' value='%u' required></div>"
+            "</div><p class='warning'>Complete-frame mode keeps the last displayed frame when a UDP packet is missing. "
+            "TCP provides ordered, retransmitted delivery when the sender supports it.</p>"
+            "<button type='submit'>Save DDP Settings and Restart</button></form></div>",
+            config.enabled ? "checked" : "",
+            config.transports == DDP_TRANSPORT_UDP ? "selected" : "",
+            config.transports == DDP_TRANSPORT_TCP ? "selected" : "",
+            config.transports == (DDP_TRANSPORT_UDP | DDP_TRANSPORT_TCP) ? "selected" : "",
+            config.start_channel,
+            config.frame_policy == DDP_MANAGER_FRAME_XLIGHTS ? "selected" : "",
+            config.frame_policy == DDP_MANAGER_FRAME_PARTIAL ? "selected" : "",
+            config.frame_timeout_ms, config.source_timeout_ms);
+    }
+    if (err == ESP_OK) {
+        err = send_chunkf(req,
+            "<div class='card'><h3>Runtime status</h3><div class='grid'>"
+            "<div class='kv'><div class='muted'>State</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>Transport</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>Output channels</div><div>%" PRIu32 "</div></div>"
+            "<div class='kv'><div class='muted'>Last controller</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>Packets</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Displayed frames</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Incomplete frames</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Busy/unavailable frames</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Duplicates</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Sequence gaps</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Malformed packets</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Rejected controllers</div><div>%" PRIu64 "</div></div>"
+            "</div></div>"
+            "<div class='card'><h3>xLights setup</h3><p>Use DDP output, this device's IP address, port 4048, "
+            "and start channel %" PRIu32 ". Keep channel numbers enabled. The configured output length is %" PRIu32 " RGB channels.</p></div>",
+            ddp_state_to_string(status.state), transport, status.output_bytes, source_text,
+            status.protocol.received_packets, status.displayed_frames, status.incomplete_frames,
+            status.busy_frames, status.protocol.duplicate_packets, status.protocol.sequence_gaps,
+            status.protocol.malformed_packets + status.protocol.oversized_packets,
+            status.rejected_sources, config.start_channel, status.output_bytes);
+    }
+    return err == ESP_OK ? end_page(req) : err;
+}
+
+static esp_err_t ddp_post_handler(httpd_req_t *req)
+{
+    char *body = NULL;
+    esp_err_t err = receive_form_body(req, &body);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ddp_manager_config_t config;
+    ddp_manager_get_config(&config);
+    char enabled[2];
+    config.enabled = form_get_value(body, "enabled", enabled, sizeof(enabled));
+
+    long value;
+    if (!form_get_long(body, "transport", &value) ||
+        (value != DDP_TRANSPORT_UDP && value != DDP_TRANSPORT_TCP &&
+         value != (DDP_TRANSPORT_UDP | DDP_TRANSPORT_TCP))) {
+        return invalid_led_form(req, body, "Invalid DDP transport");
+    }
+    config.transports = (uint8_t)value;
+    uint32_t start_channel;
+    if (!form_get_u32(body, "start_channel", &start_channel) || start_channel < 1) {
+        return invalid_led_form(req, body, "The DDP start channel must be at least 1");
+    }
+    config.start_channel = start_channel;
+    if (!form_get_long(body, "frame_policy", &value) ||
+        value < DDP_MANAGER_FRAME_XLIGHTS || value > DDP_MANAGER_FRAME_PARTIAL) {
+        return invalid_led_form(req, body, "Invalid DDP frame policy");
+    }
+    config.frame_policy = (ddp_manager_frame_policy_t)value;
+    if (!form_get_long(body, "frame_timeout", &value) || value < 50 || value > 5000) {
+        return invalid_led_form(req, body, "Frame timeout must be between 50 and 5000 ms");
+    }
+    config.frame_timeout_ms = (uint16_t)value;
+    if (!form_get_long(body, "source_timeout", &value) || value < 100 || value > 60000) {
+        return invalid_led_form(req, body, "Controller timeout must be between 100 and 60000 ms");
+    }
+    config.source_timeout_ms = (uint16_t)value;
+    free(body);
+
+    err = ddp_manager_save_config(&config);
+    if (err == ESP_ERR_INVALID_ARG) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid DDP configuration");
+        return err;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save DDP configuration");
+        return err;
+    }
+
+    err = begin_page(req, "Restarting", "/ddp");
+    if (err == ESP_OK) {
+        err = send_chunkf(req, "<div class='card'><h3>DDP settings saved</h3>"
+                               "<p>The device is restarting and will apply the configuration from NVS.</p></div>");
+    }
+    if (err == ESP_OK) {
+        err = end_page(req);
+    }
+    if (err == ESP_OK) {
+        schedule_restart();
+    }
+    return err;
+}
+
 static esp_err_t configuration_get_handler(httpd_req_t *req)
 {
     ultraled_manager_config_t config;
@@ -770,6 +953,8 @@ static esp_err_t configuration_get_handler(httpd_req_t *req)
     if (network_manager_get_ipv4_config(&ipv4_config) != ESP_OK) {
         memset(&ipv4_config, 0, sizeof(ipv4_config));
     }
+    ddp_manager_config_t ddp_config;
+    ddp_manager_get_config(&ddp_config);
 
     esp_err_t err = begin_page(req, "Configuration", "/configuration");
     if (err == ESP_OK) {
@@ -782,6 +967,8 @@ static esp_err_t configuration_get_handler(httpd_req_t *req)
             "<div class='kv'><div class='muted'>Subnet mask</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>DNS server</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>LED configuration storage</div><div>NVS</div></div>"
+            "<div class='kv'><div class='muted'>DDP configuration storage</div><div>NVS</div></div>"
+            "<div class='kv'><div class='muted'>DDP enabled</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>Maximum channels</div><div>%d</div></div>"
             "<div class='kv'><div class='muted'>Maximum pixels per channel</div><div>%d</div></div>"
             "<div class='kv'><div class='muted'>LED changes</div><div>Applied after restart</div></div>"
@@ -793,6 +980,7 @@ static esp_err_t configuration_get_handler(httpd_req_t *req)
             ipv4_config.use_static_ip ? ipv4_config.gateway : "Assigned automatically",
             ipv4_config.use_static_ip ? ipv4_config.netmask : "Assigned automatically",
             ipv4_config.use_static_ip ? ipv4_config.dns : "Assigned automatically",
+            ddp_config.enabled ? "Yes" : "No",
             ULTRALED_MAX_CHANNELS,
             ULTRALED_MANAGER_MAX_PIXELS_PER_CHANNEL, config.enabled ? "Yes" : "No");
     }
@@ -835,7 +1023,7 @@ static esp_err_t start_http_server(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = CONFIG_WEB_INTERFACE_HTTP_PORT;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;
 
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -853,6 +1041,8 @@ static esp_err_t start_http_server(void)
         { .uri = "/wifi-scan", .method = HTTP_GET, .handler = wifi_scan_get_handler },
         { .uri = "/led-channels", .method = HTTP_GET, .handler = led_channels_get_handler },
         { .uri = "/led-channels", .method = HTTP_POST, .handler = led_channels_post_handler },
+        { .uri = "/ddp", .method = HTTP_GET, .handler = ddp_get_handler },
+        { .uri = "/ddp", .method = HTTP_POST, .handler = ddp_post_handler },
         { .uri = "/configuration", .method = HTTP_GET, .handler = configuration_get_handler },
         { .uri = "/reboot", .method = HTTP_GET, .handler = reboot_get_handler },
         { .uri = "/reboot", .method = HTTP_POST, .handler = reboot_post_handler },
