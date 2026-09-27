@@ -111,7 +111,7 @@ DDP data is mapped as contiguous RGB bytes across the configured LED channels, s
 
 | Page | Purpose |
 | --- | --- |
-| **Status** | Shows network, LED, DDP, model, and channel state |
+| **Status** | Shows network, LED, DDP, uptime, CPU, task, reset, and memory state |
 | **Network** | Configures DHCP/static IPv4 and Wi-Fi fallback credentials |
 | **LED Channels** | Configures the LED model and output channels |
 | **DDP / xLights** | Configures DDP transport, channel mapping, frame policy, and timeouts |

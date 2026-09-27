@@ -11,10 +11,13 @@
 #include <string.h>
 
 #include "ddp_manager.h"
+#include "esp_chip_info.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
@@ -102,6 +105,62 @@ static const char *ddp_state_to_string(ddp_manager_state_t state)
         return "Error";
     default:
         return "Unknown";
+    }
+}
+
+static const char *reset_reason_to_string(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_POWERON:
+        return "Power on";
+    case ESP_RST_EXT:
+        return "External reset";
+    case ESP_RST_SW:
+        return "Software restart";
+    case ESP_RST_PANIC:
+        return "Software panic";
+    case ESP_RST_INT_WDT:
+        return "Interrupt watchdog";
+    case ESP_RST_TASK_WDT:
+        return "Task watchdog";
+    case ESP_RST_WDT:
+        return "Watchdog";
+    case ESP_RST_DEEPSLEEP:
+        return "Deep-sleep wakeup";
+    case ESP_RST_BROWNOUT:
+        return "Brownout";
+    case ESP_RST_SDIO:
+        return "SDIO reset";
+    case ESP_RST_USB:
+        return "USB reset";
+    case ESP_RST_JTAG:
+        return "JTAG reset";
+    case ESP_RST_EFUSE:
+        return "eFuse error";
+    case ESP_RST_PWR_GLITCH:
+        return "Power glitch";
+    case ESP_RST_CPU_LOCKUP:
+        return "CPU lockup";
+    case ESP_RST_UNKNOWN:
+    default:
+        return "Unknown";
+    }
+}
+
+static void format_uptime(char *buffer, size_t buffer_size)
+{
+    uint64_t total_seconds = (uint64_t)esp_timer_get_time() / 1000000U;
+    uint64_t days = total_seconds / 86400U;
+    unsigned hours = (unsigned)((total_seconds / 3600U) % 24U);
+    unsigned minutes = (unsigned)((total_seconds / 60U) % 60U);
+    unsigned seconds = (unsigned)(total_seconds % 60U);
+
+    if (days > 0) {
+        snprintf(buffer, buffer_size, "%" PRIu64 "d %02uh %02um %02us", days, hours, minutes, seconds);
+    } else if (hours > 0) {
+        snprintf(buffer, buffer_size, "%uh %02um %02us", hours, minutes, seconds);
+    } else {
+        snprintf(buffer, buffer_size, "%um %02us", minutes, seconds);
     }
 }
 
@@ -417,7 +476,9 @@ static esp_err_t logo_get_handler(httpd_req_t *req)
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
     char ip[16];
+    char uptime[40];
     get_active_ip(ip);
+    format_uptime(uptime, sizeof(uptime));
 
     ultraled_manager_config_t led_config;
     ultraled_manager_get_config(&led_config);
@@ -425,6 +486,27 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     esp_err_t led_error = ultraled_manager_get_last_error();
     ddp_manager_status_t ddp_status;
     ddp_manager_get_status(&ddp_status);
+
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+
+    const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    size_t internal_total = heap_caps_get_total_size(internal_caps);
+    size_t internal_free = heap_caps_get_free_size(internal_caps);
+    size_t internal_minimum = heap_caps_get_minimum_free_size(internal_caps);
+    size_t internal_largest = heap_caps_get_largest_free_block(internal_caps);
+    unsigned internal_used_percent = internal_total == 0
+                                         ? 0
+                                         : (unsigned)(((internal_total - internal_free) * 100U) /
+                                                      internal_total);
+
+    size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_minimum = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    unsigned psram_used_percent = psram_total == 0
+                                      ? 0
+                                      : (unsigned)(((psram_total - psram_free) * 100U) / psram_total);
 
     esp_err_t err = begin_page(req, "Status", "/status");
     if (err == ESP_OK) {
@@ -444,6 +526,37 @@ static esp_err_t status_get_handler(httpd_req_t *req)
             ddp_status.state == DDP_MANAGER_ERROR ? ": " : "",
             ddp_status.state == DDP_MANAGER_ERROR ? esp_err_to_name(ddp_status.last_error) : "",
             model_to_string(led_config.led_model), led_config.channel_count);
+    }
+    if (err == ESP_OK) {
+        err = send_chunkf(req,
+            "<div class='card'><h3>System</h3><div class='grid'>"
+            "<div class='kv'><div class='muted'>Uptime</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>Last reset</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>CPU</div><div>ESP32-P4 rev v%u.%u &middot; %u cores @ %d MHz</div></div>"
+            "<div class='kv'><div class='muted'>FreeRTOS tasks</div><div>%u</div></div>"
+            "<div class='kv'><div class='muted'>ESP-IDF</div><div>%s</div></div>"
+            "</div></div>"
+            "<div class='card'><h3>Memory</h3><div class='grid'>"
+            "<div class='kv'><div class='muted'>Internal RAM</div><div>%zu KiB free / %zu KiB total (%u%% used)</div></div>"
+            "<div class='kv'><div class='muted'>Internal low watermark</div><div>%zu KiB</div></div>"
+            "<div class='kv'><div class='muted'>Largest internal block</div><div>%zu KiB</div></div>"
+            "</div></div>",
+            uptime, reset_reason_to_string(esp_reset_reason()),
+            (unsigned)(chip_info.revision / 100U), (unsigned)(chip_info.revision % 100U),
+            chip_info.cores, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+            (unsigned)uxTaskGetNumberOfTasks(), esp_get_idf_version(),
+            internal_free / 1024U, internal_total / 1024U, internal_used_percent,
+            internal_minimum / 1024U, internal_largest / 1024U);
+    }
+    if (err == ESP_OK && psram_total > 0) {
+        err = send_chunkf(req,
+            "<div class='card'><h3>PSRAM</h3><div class='grid'>"
+            "<div class='kv'><div class='muted'>PSRAM</div><div>%zu KiB free / %zu KiB total (%u%% used)</div></div>"
+            "<div class='kv'><div class='muted'>PSRAM low watermark</div><div>%zu KiB</div></div>"
+            "<div class='kv'><div class='muted'>Largest PSRAM block</div><div>%zu KiB</div></div>"
+            "</div></div>",
+            psram_free / 1024U, psram_total / 1024U, psram_used_percent,
+            psram_minimum / 1024U, psram_largest / 1024U);
     }
     return err == ESP_OK ? end_page(req) : err;
 }
