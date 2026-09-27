@@ -17,3 +17,6 @@ sdkconfig.old
 
 # macOS metadata
 .DS_Store
+
+sdkconfig
+sdkconfig.old

@@ -242,6 +242,18 @@ static esp_err_t start_ultraled(const ultraled_manager_config_t *config)
     }
 
     err = ultraled_clear_all(s_handle);
+    for (size_t channel = 0; err == ESP_OK && channel < config->channel_count; ++channel) {
+        err = ultraled_set_pixel(s_handle, channel, 0, (ultraled_rgb_t) {.green = 255});
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Channel %u test: pixel 1 green (GPIO %d, brightness %u%%)",
+                     (unsigned)channel + 1U, config->channels[channel].gpio_num,
+                     config->channels[channel].brightness_percent);
+            if (config->channels[channel].brightness_percent == 0) {
+                ESP_LOGW(TAG, "Channel %u test will not be visible because brightness is 0%%",
+                         (unsigned)channel + 1U);
+            }
+        }
+    }
     if (err == ESP_OK) {
         err = ultraled_show(s_handle, ULTRALED_WAIT_FOREVER);
     }
