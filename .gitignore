@@ -1,0 +1,22 @@
+# ESP-IDF build output
+build/
+
+# ESP-IDF component manager outputs
+managed_components/
+
+# IDE and helper metadata
+.clangd/
+.vscode/
+
+# Generated logs and caches
+.pytest_cache/
+*.log
+
+# Generated SDK config backups
+sdkconfig.old
+
+# macOS metadata
+.DS_Store
+
+sdkconfig
+sdkconfig.old
