@@ -1,0 +1,71 @@
+menu "Network Manager"
+
+    menu "Ethernet (ESP32-P4-Function-EV-Board, IP101 PHY)"
+
+        config NETWORK_MANAGER_ETH_PHY_ADDR
+            int "PHY address"
+            default 1
+
+        config NETWORK_MANAGER_ETH_MDC_GPIO
+            int "MDC GPIO number"
+            default 31
+
+        config NETWORK_MANAGER_ETH_MDIO_GPIO
+            int "MDIO GPIO number"
+            default 52
+
+        config NETWORK_MANAGER_ETH_PHY_RST_GPIO
+            int "PHY reset GPIO number"
+            default 51
+
+        config NETWORK_MANAGER_ETH_RMII_TX_EN_GPIO
+            int "RMII TX_EN GPIO number"
+            default 49
+
+        config NETWORK_MANAGER_ETH_RMII_TXD0_GPIO
+            int "RMII TXD0 GPIO number"
+            default 34
+
+        config NETWORK_MANAGER_ETH_RMII_TXD1_GPIO
+            int "RMII TXD1 GPIO number"
+            default 35
+
+        config NETWORK_MANAGER_ETH_RMII_CRS_DV_GPIO
+            int "RMII CRS_DV GPIO number"
+            default 28
+
+        config NETWORK_MANAGER_ETH_RMII_RXD0_GPIO
+            int "RMII RXD0 GPIO number"
+            default 29
+
+        config NETWORK_MANAGER_ETH_RMII_RXD1_GPIO
+            int "RMII RXD1 GPIO number"
+            default 30
+
+        config NETWORK_MANAGER_ETH_RMII_CLK_GPIO
+            int "RMII REF_CLK input GPIO number"
+            default 50
+
+        config NETWORK_MANAGER_ETH_CONNECT_TIMEOUT_MS
+            int "Time to wait for Ethernet to get an IP before falling back to WiFi (ms)"
+            default 10000
+
+    endmenu
+
+    menu "WiFi Fallback"
+
+        config NETWORK_MANAGER_WIFI_MAX_RETRY
+            int "Maximum WiFi connection retries before giving up"
+            default 5
+
+        config NETWORK_MANAGER_WIFI_DEFAULT_SSID
+            string "Default WiFi SSID (used only when none is stored in NVS yet)"
+            default ""
+
+        config NETWORK_MANAGER_WIFI_DEFAULT_PASSWORD
+            string "Default WiFi password (used only when none is stored in NVS yet)"
+            default ""
+
+    endmenu
+
+endmenu
