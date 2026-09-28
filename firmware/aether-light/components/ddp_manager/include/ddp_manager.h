@@ -38,7 +38,9 @@ typedef struct {
     uint32_t output_bytes;
     uint64_t displayed_frames;
     uint64_t incomplete_frames;
-    uint64_t busy_frames;
+    uint64_t superseded_frames;
+    uint64_t output_errors;
+    esp_err_t last_output_error;
     uint64_t rejected_sources;
     ddp_server_stats_t protocol;
 } ddp_manager_status_t;

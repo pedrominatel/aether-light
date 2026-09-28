@@ -931,6 +931,9 @@ static esp_err_t ddp_get_handler(httpd_req_t *req)
     const char *transport = config.transports == (DDP_TRANSPORT_UDP | DDP_TRANSPORT_TCP)
                                 ? "UDP + TCP"
                                 : (config.transports == DDP_TRANSPORT_TCP ? "TCP" : "UDP");
+    const char *last_output_error = status.output_errors == 0
+                                        ? "-"
+                                        : esp_err_to_name(status.last_output_error);
 
     esp_err_t err = begin_page(req, "DDP / xLights", "/ddp");
     if (err == ESP_OK) {
@@ -977,7 +980,9 @@ static esp_err_t ddp_get_handler(httpd_req_t *req)
             "<div class='kv'><div class='muted'>Packets</div><div>%" PRIu64 "</div></div>"
             "<div class='kv'><div class='muted'>Displayed frames</div><div>%" PRIu64 "</div></div>"
             "<div class='kv'><div class='muted'>Incomplete frames</div><div>%" PRIu64 "</div></div>"
-            "<div class='kv'><div class='muted'>Busy/unavailable frames</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Superseded frames</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Output errors</div><div>%" PRIu64 "</div></div>"
+            "<div class='kv'><div class='muted'>Last output error</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>Duplicates</div><div>%" PRIu64 "</div></div>"
             "<div class='kv'><div class='muted'>Sequence gaps</div><div>%" PRIu64 "</div></div>"
             "<div class='kv'><div class='muted'>Malformed packets</div><div>%" PRIu64 "</div></div>"
@@ -987,7 +992,8 @@ static esp_err_t ddp_get_handler(httpd_req_t *req)
             "and start channel %" PRIu32 ". Keep channel numbers enabled. The configured output length is %" PRIu32 " RGB channels.</p></div>",
             ddp_state_to_string(status.state), transport, status.output_bytes, source_text,
             status.protocol.received_packets, status.displayed_frames, status.incomplete_frames,
-            status.busy_frames, status.protocol.duplicate_packets, status.protocol.sequence_gaps,
+            status.superseded_frames, status.output_errors, last_output_error,
+            status.protocol.duplicate_packets, status.protocol.sequence_gaps,
             status.protocol.malformed_packets + status.protocol.oversized_packets,
             status.rejected_sources, config.start_channel, status.output_bytes);
     }

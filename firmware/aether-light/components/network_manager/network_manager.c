@@ -41,10 +41,12 @@ static SemaphoreHandle_t s_wifi_mutex;
 static volatile network_manager_state_t s_state = NETWORK_MANAGER_DISCONNECTED;
 static bool s_wifi_initialized = false;
 static bool s_wifi_handlers_registered = false;
-static bool s_wifi_started = false;
+static volatile bool s_wifi_started = false;
+static volatile bool s_wifi_fallback_requested = false;
 static int s_wifi_retry_count = 0;
 
 static void start_wifi_fallback(void);
+static void stop_wifi_fallback(void);
 
 static esp_err_t ensure_wifi_initialized(void)
 {
@@ -160,6 +162,10 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
         break;
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet link down");
+        xEventGroupClearBits(s_network_event_group, ETH_CONNECTED_BIT);
+        s_state = (xEventGroupGetBits(s_network_event_group) & WIFI_CONNECTED_BIT)
+                      ? NETWORK_MANAGER_CONNECTED_WIFI
+                      : NETWORK_MANAGER_CONNECTING;
         start_wifi_fallback();
         break;
     case ETHERNET_EVENT_START:
@@ -167,46 +173,116 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
         break;
     case ETHERNET_EVENT_STOP:
         ESP_LOGI(TAG, "Ethernet stopped");
+        xEventGroupClearBits(s_network_event_group, ETH_CONNECTED_BIT);
+        s_state = (xEventGroupGetBits(s_network_event_group) & WIFI_CONNECTED_BIT)
+                      ? NETWORK_MANAGER_CONNECTED_WIFI
+                      : NETWORK_MANAGER_CONNECTING;
+        start_wifi_fallback();
         break;
     default:
         break;
     }
 }
 
-static void eth_got_ip_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+static void eth_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
+    if (event_id == IP_EVENT_ETH_LOST_IP) {
+        bool was_connected = (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) != 0;
+        xEventGroupClearBits(s_network_event_group, ETH_CONNECTED_BIT);
+        if (was_connected) {
+            ESP_LOGW(TAG, "Ethernet lost its IP address");
+            s_state = (xEventGroupGetBits(s_network_event_group) & WIFI_CONNECTED_BIT)
+                          ? NETWORK_MANAGER_CONNECTED_WIFI
+                          : NETWORK_MANAGER_CONNECTING;
+            start_wifi_fallback();
+        }
+        return;
+    }
+    if (event_id != IP_EVENT_ETH_GOT_IP) {
+        return;
+    }
+
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "Ethernet got IP:" IPSTR, IP2STR(&event->ip_info.ip));
-
     if (s_eth_fallback_timer) {
         esp_timer_stop(s_eth_fallback_timer);
     }
-    s_state = NETWORK_MANAGER_CONNECTED_ETH;
     xEventGroupSetBits(s_network_event_group, ETH_CONNECTED_BIT);
+    s_state = NETWORK_MANAGER_CONNECTED_ETH;
+    esp_err_t err = esp_netif_set_default_netif(s_eth_netif);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to select Ethernet as the default interface: %s",
+                 esp_err_to_name(err));
+    }
+    stop_wifi_fallback();
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        s_wifi_started = true;
+        if (s_wifi_fallback_requested &&
+            !(xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT)) {
+            esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to connect WiFi fallback: %s", esp_err_to_name(err));
+            }
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        if (apply_ipv4_config(s_wifi_netif) != ESP_OK) {
+        if (s_wifi_fallback_requested &&
+            !(xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) &&
+            apply_ipv4_config(s_wifi_netif) != ESP_OK) {
             ESP_LOGW(TAG, "Could not apply static IPv4 settings to WiFi; using DHCP");
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_retry_count < CONFIG_NETWORK_MANAGER_WIFI_MAX_RETRY) {
-            esp_wifi_connect();
-            s_wifi_retry_count++;
-            ESP_LOGW(TAG, "Retrying WiFi connection (%d/%d)", s_wifi_retry_count, CONFIG_NETWORK_MANAGER_WIFI_MAX_RETRY);
-        } else {
-            ESP_LOGE(TAG, "WiFi connection failed, no network available");
+        xEventGroupClearBits(s_network_event_group, WIFI_CONNECTED_BIT);
+        if (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) {
+            s_state = NETWORK_MANAGER_CONNECTED_ETH;
+        } else if (s_wifi_fallback_requested) {
+            s_state = NETWORK_MANAGER_CONNECTING;
+            if (s_wifi_retry_count < CONFIG_NETWORK_MANAGER_WIFI_MAX_RETRY) {
+                esp_err_t err = esp_wifi_connect();
+                s_wifi_retry_count++;
+                if (err == ESP_OK) {
+                    ESP_LOGW(TAG, "Retrying WiFi connection (%d/%d)", s_wifi_retry_count,
+                             CONFIG_NETWORK_MANAGER_WIFI_MAX_RETRY);
+                } else {
+                    ESP_LOGE(TAG, "Failed to retry WiFi connection: %s", esp_err_to_name(err));
+                }
+            } else {
+                s_state = NETWORK_MANAGER_DISCONNECTED;
+                ESP_LOGE(TAG, "WiFi connection failed, no network available");
+            }
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_STOP) {
+        s_wifi_started = false;
+        xEventGroupClearBits(s_network_event_group, WIFI_CONNECTED_BIT);
+        if (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) {
+            s_state = NETWORK_MANAGER_CONNECTED_ETH;
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi got IP:" IPSTR, IP2STR(&event->ip_info.ip));
+        if (!s_wifi_fallback_requested ||
+            (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT)) {
+            ESP_LOGI(TAG, "Ignoring WiFi IP because Ethernet is active");
+            return;
+        }
         s_wifi_retry_count = 0;
-        s_state = NETWORK_MANAGER_CONNECTED_WIFI;
         xEventGroupSetBits(s_network_event_group, WIFI_CONNECTED_BIT);
+        s_state = NETWORK_MANAGER_CONNECTED_WIFI;
+        esp_err_t err = esp_netif_set_default_netif(s_wifi_netif);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to select WiFi as the default interface: %s",
+                     esp_err_to_name(err));
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP) {
+        xEventGroupClearBits(s_network_event_group, WIFI_CONNECTED_BIT);
+        if (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) {
+            s_state = NETWORK_MANAGER_CONNECTED_ETH;
+        } else if (s_wifi_fallback_requested) {
+            s_state = NETWORK_MANAGER_CONNECTING;
+        }
     }
 }
 
@@ -284,6 +360,9 @@ esp_err_t network_manager_scan_wifi(network_manager_wifi_ap_t *results, size_t m
     if (err == ESP_OK && !s_wifi_started) {
         err = esp_wifi_start();
         temporary_start = err == ESP_OK;
+        if (temporary_start) {
+            s_wifi_started = true;
+        }
     }
 
     wifi_ap_record_t *records = NULL;
@@ -326,6 +405,10 @@ esp_err_t network_manager_scan_wifi(network_manager_wifi_ap_t *results, size_t m
     free(records);
     if (temporary_start) {
         esp_err_t stop_err = esp_wifi_stop();
+        if (stop_err == ESP_OK || stop_err == ESP_ERR_WIFI_NOT_STARTED) {
+            s_wifi_started = false;
+            stop_err = ESP_OK;
+        }
         if (err == ESP_OK && stop_err != ESP_OK) {
             err = stop_err;
         }
@@ -421,16 +504,29 @@ static void start_wifi_fallback(void)
     if (s_wifi_mutex == NULL || xSemaphoreTake(s_wifi_mutex, portMAX_DELAY) != pdTRUE) {
         return;
     }
-    if (s_wifi_started) {
+
+    if (s_wifi_fallback_requested) {
+        s_state = (xEventGroupGetBits(s_network_event_group) & WIFI_CONNECTED_BIT)
+                      ? NETWORK_MANAGER_CONNECTED_WIFI
+                      : NETWORK_MANAGER_CONNECTING;
         xSemaphoreGive(s_wifi_mutex);
         return;
     }
+    s_wifi_fallback_requested = true;
+    if (xEventGroupGetBits(s_network_event_group) & WIFI_CONNECTED_BIT) {
+        s_state = NETWORK_MANAGER_CONNECTED_WIFI;
+        xSemaphoreGive(s_wifi_mutex);
+        return;
+    }
+    s_state = NETWORK_MANAGER_CONNECTING;
 
     char ssid[33] = {0};
     char password[65] = {0};
     if (load_wifi_credentials(ssid, sizeof(ssid), password, sizeof(password)) != ESP_OK) {
         if (strlen(CONFIG_NETWORK_MANAGER_WIFI_DEFAULT_SSID) == 0) {
             ESP_LOGE(TAG, "No WiFi credentials stored in NVS, cannot fall back to WiFi");
+            s_wifi_fallback_requested = false;
+            s_state = NETWORK_MANAGER_DISCONNECTED;
             xSemaphoreGive(s_wifi_mutex);
             return;
         }
@@ -440,21 +536,29 @@ static void start_wifi_fallback(void)
     }
 
     ESP_LOGI(TAG, "Falling back to WiFi, connecting to SSID '%s'", ssid);
-    s_state = NETWORK_MANAGER_CONNECTING;
 
     esp_err_t err = ensure_wifi_initialized();
     if (err != ESP_OK) {
+        s_wifi_fallback_requested = false;
+        s_state = NETWORK_MANAGER_DISCONNECTED;
         xSemaphoreGive(s_wifi_mutex);
         return;
     }
 
     if (!s_wifi_handlers_registered) {
+        bool wifi_handler_registered = false;
         err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
         if (err == ESP_OK) {
-            err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
+            wifi_handler_registered = true;
+            err = esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
         }
         if (err != ESP_OK) {
+            if (wifi_handler_registered) {
+                esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
+            }
             ESP_LOGE(TAG, "Failed to register WiFi event handlers: %s", esp_err_to_name(err));
+            s_wifi_fallback_requested = false;
+            s_state = NETWORK_MANAGER_DISCONNECTED;
             xSemaphoreGive(s_wifi_mutex);
             return;
         }
@@ -466,14 +570,46 @@ static void start_wifi_fallback(void)
     strlcpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
     wifi_config.sta.threshold.authmode = strlen(password) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 
+    bool was_started = s_wifi_started;
     err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    if (err == ESP_OK) {
+    if (err == ESP_OK && s_wifi_started) {
+        s_wifi_retry_count = 0;
+        err = esp_wifi_connect();
+    } else if (err == ESP_OK) {
         s_wifi_started = true;
         err = esp_wifi_start();
     }
     if (err != ESP_OK) {
-        s_wifi_started = false;
+        if (!was_started) {
+            s_wifi_started = false;
+        }
+        s_wifi_fallback_requested = false;
+        s_state = NETWORK_MANAGER_DISCONNECTED;
         ESP_LOGE(TAG, "Failed to start WiFi fallback: %s", esp_err_to_name(err));
+    }
+    xSemaphoreGive(s_wifi_mutex);
+}
+
+static void stop_wifi_fallback(void)
+{
+    if (s_wifi_mutex == NULL || xSemaphoreTake(s_wifi_mutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    s_wifi_fallback_requested = false;
+    s_wifi_retry_count = 0;
+    xEventGroupClearBits(s_network_event_group, WIFI_CONNECTED_BIT);
+    if (s_wifi_started) {
+        ESP_LOGI(TAG, "Ethernet is active; stopping WiFi fallback");
+        esp_err_t err = esp_wifi_stop();
+        if (err == ESP_OK || err == ESP_ERR_WIFI_NOT_STARTED) {
+            s_wifi_started = false;
+        } else {
+            ESP_LOGW(TAG, "Failed to stop WiFi fallback: %s", esp_err_to_name(err));
+        }
+    }
+    if (xEventGroupGetBits(s_network_event_group) & ETH_CONNECTED_BIT) {
+        s_state = NETWORK_MANAGER_CONNECTED_ETH;
     }
     xSemaphoreGive(s_wifi_mutex);
 }
@@ -565,7 +701,8 @@ esp_err_t network_manager_start(void)
 
     ESP_ERROR_CHECK(esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle)));
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &eth_got_ip_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &eth_ip_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, &eth_ip_event_handler, NULL));
 
     const esp_timer_create_args_t timer_args = {
         .callback = &eth_fallback_timer_cb,

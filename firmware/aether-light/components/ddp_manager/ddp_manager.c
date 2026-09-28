@@ -21,6 +21,11 @@
 #define DDP_MANAGER_NVS_KEY        "config"
 #define DDP_MANAGER_NVS_MAGIC      0x44445043U
 #define DDP_MANAGER_NVS_VERSION    1U
+#define DDP_OUTPUT_TASK_STACK_SIZE 4096U
+#define DDP_OUTPUT_TASK_PRIORITY   5U
+#define DDP_OUTPUT_TIMEOUT_MS      100
+#define DDP_OUTPUT_BACKOFF_MIN_MS  100U
+#define DDP_OUTPUT_BACKOFF_MAX_MS  1000U
 
 typedef struct {
     uint32_t magic;
@@ -42,17 +47,21 @@ static const char *TAG = "ddp_manager";
 
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_monitor_task;
+static TaskHandle_t s_output_task;
 static ddp_server_handle_t s_server;
 static ddp_manager_config_t s_config;
 static ddp_manager_config_t s_runtime_config;
 static ddp_manager_status_t s_status;
 static ultraled_manager_config_t s_led_config;
 static uint8_t *s_frame;
+static uint8_t *s_pending_frame;
+static uint8_t *s_output_frame;
 static uint8_t *s_coverage;
 static size_t s_frame_length;
 static size_t s_coverage_length;
 static size_t s_covered_bytes;
 static bool s_frame_open;
+static bool s_pending_frame_ready;
 static uint32_t s_active_source;
 static TickType_t s_last_source_tick;
 static TickType_t s_frame_started_tick;
@@ -299,51 +308,91 @@ static esp_err_t data_callback(void *context, const ddp_packet_t *packet)
     return ESP_OK;
 }
 
-static esp_err_t output_frame_locked(void)
+static bool take_pending_frame(void)
+{
+    bool available = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_pending_frame_ready) {
+        uint8_t *previous_output = s_output_frame;
+        s_output_frame = s_pending_frame;
+        s_pending_frame = previous_output;
+        s_pending_frame_ready = false;
+        available = true;
+    }
+    xSemaphoreGive(s_lock);
+    return available;
+}
+
+static esp_err_t output_frame(const uint8_t *frame)
 {
     ultraled_handle_t handle = ultraled_manager_get_handle();
     if (handle == NULL) {
-        s_status.busy_frames++;
-        if (s_status.busy_frames == 1 || s_status.busy_frames % 100 == 0) {
-            ESP_LOGW(TAG, "Cannot display DDP frame: UltraLED is not active "
-                          "(%" PRIu64 " unavailable/busy frames)", s_status.busy_frames);
-        }
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = ultraled_wait_done(handle, 0);
-    if (err != ESP_OK) {
-        s_status.busy_frames++;
-        if (s_status.busy_frames == 1 || s_status.busy_frames % 100 == 0) {
-            ESP_LOGW(TAG, "Dropped DDP frame while UltraLED was busy: %s "
-                          "(%" PRIu64 " unavailable/busy frames)",
-                     esp_err_to_name(err), s_status.busy_frames);
-        }
-        return err;
-    }
 
+    esp_err_t err = ESP_OK;
     size_t byte_offset = 0;
     for (size_t channel = 0; channel < s_led_config.channel_count; ++channel) {
         size_t count = s_led_config.channels[channel].led_count;
         err = ultraled_set_pixels(handle, channel, 0,
-                                  (const ultraled_rgb_t *)(s_frame + byte_offset), count);
+                                  (const ultraled_rgb_t *)(frame + byte_offset), count);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to update UltraLED channel %u: %s",
-                     (unsigned)channel + 1U, esp_err_to_name(err));
             return err;
         }
         byte_offset += count * sizeof(ultraled_rgb_t);
     }
-    err = ultraled_show_async(handle);
-    if (err == ESP_OK) {
-        s_status.displayed_frames++;
-        if (s_status.displayed_frames == 1 || s_status.displayed_frames % 1000 == 0) {
-            ESP_LOGI(TAG, "Displayed DDP frame %" PRIu64, s_status.displayed_frames);
+    return ultraled_show(handle, DDP_OUTPUT_TIMEOUT_MS);
+}
+
+static void output_task(void *argument)
+{
+    (void)argument;
+    uint32_t backoff_ms = DDP_OUTPUT_BACKOFF_MIN_MS;
+    uint32_t consecutive_errors = 0;
+
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!take_pending_frame()) {
+            continue;
         }
-    } else {
-        s_status.busy_frames++;
-        ESP_LOGW(TAG, "Failed to start UltraLED transmission: %s", esp_err_to_name(err));
+
+        esp_err_t err = output_frame(s_output_frame);
+        if (err == ESP_OK) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            uint64_t displayed = ++s_status.displayed_frames;
+            xSemaphoreGive(s_lock);
+
+            if (consecutive_errors != 0) {
+                ESP_LOGI(TAG, "DDP LED output recovered after %" PRIu32 " error(s)",
+                         consecutive_errors);
+            }
+            consecutive_errors = 0;
+            backoff_ms = DDP_OUTPUT_BACKOFF_MIN_MS;
+            if (displayed == 1 || displayed % 1000 == 0) {
+                ESP_LOGI(TAG, "Displayed DDP frame %" PRIu64, displayed);
+            }
+            continue;
+        }
+
+        consecutive_errors++;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        uint64_t errors = ++s_status.output_errors;
+        s_status.last_output_error = err;
+        xSemaphoreGive(s_lock);
+        if (errors == 1 || errors % 10 == 0) {
+            ESP_LOGW(TAG, "DDP LED output failed: %s (%" PRIu64
+                          " errors, retry backoff %" PRIu32 " ms)",
+                     esp_err_to_name(err), errors, backoff_ms);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        if (backoff_ms < DDP_OUTPUT_BACKOFF_MAX_MS) {
+            backoff_ms *= 2U;
+            if (backoff_ms > DDP_OUTPUT_BACKOFF_MAX_MS) {
+                backoff_ms = DDP_OUTPUT_BACKOFF_MAX_MS;
+            }
+        }
     }
-    return err;
 }
 
 static esp_err_t push_callback(void *context, const ddp_packet_t *packet)
@@ -360,7 +409,7 @@ static esp_err_t push_callback(void *context, const ddp_packet_t *packet)
         return ESP_OK;
     }
 
-    esp_err_t err = ESP_OK;
+    bool notify_output = false;
     if (s_runtime_config.frame_policy == DDP_MANAGER_FRAME_XLIGHTS && s_covered_bytes != s_frame_length) {
         s_status.incomplete_frames++;
         if (s_status.incomplete_frames == 1 || s_status.incomplete_frames % 100 == 0) {
@@ -372,11 +421,27 @@ static esp_err_t push_callback(void *context, const ddp_packet_t *packet)
     } else {
         ESP_LOGD(TAG, "Push accepted: %u frame bytes, policy=%u",
                  (unsigned)s_frame_length, s_runtime_config.frame_policy);
-        err = output_frame_locked();
+        if (s_pending_frame == NULL || s_output_task == NULL) {
+            s_status.output_errors++;
+            s_status.last_output_error = ESP_ERR_INVALID_STATE;
+            reset_frame_locked();
+            xSemaphoreGive(s_lock);
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (s_pending_frame_ready) {
+            s_status.superseded_frames++;
+        }
+        memcpy(s_pending_frame, s_frame, s_frame_length);
+        s_pending_frame_ready = true;
+        notify_output = true;
     }
     reset_frame_locked();
+    TaskHandle_t output = s_output_task;
     xSemaphoreGive(s_lock);
-    return err;
+    if (notify_output && output != NULL) {
+        xTaskNotifyGive(output);
+    }
+    return ESP_OK;
 }
 
 static esp_err_t query_callback(void *context, const ddp_packet_t *query,
@@ -483,6 +548,7 @@ static void stop_server(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_status.state = s_runtime_config.enabled ? DDP_MANAGER_WAITING_NETWORK : DDP_MANAGER_DISABLED;
     reset_frame_locked();
+    s_pending_frame_ready = false;
     xSemaphoreGive(s_lock);
 }
 
@@ -539,11 +605,20 @@ esp_err_t ddp_manager_init(void)
     }
     s_coverage_length = (s_frame_length + 7U) / 8U;
     s_frame = calloc(s_frame_length, 1);
+    if (s_runtime_config.enabled) {
+        s_pending_frame = calloc(s_frame_length, 1);
+        s_output_frame = calloc(s_frame_length, 1);
+    }
     s_coverage = calloc(s_coverage_length, 1);
-    if (s_frame == NULL || s_coverage == NULL) {
+    if (s_frame == NULL || s_coverage == NULL ||
+        (s_runtime_config.enabled && (s_pending_frame == NULL || s_output_frame == NULL))) {
         free(s_frame);
+        free(s_pending_frame);
+        free(s_output_frame);
         free(s_coverage);
         s_frame = NULL;
+        s_pending_frame = NULL;
+        s_output_frame = NULL;
         s_coverage = NULL;
         s_status.state = DDP_MANAGER_ERROR;
         s_status.last_error = ESP_ERR_NO_MEM;
@@ -554,11 +629,13 @@ esp_err_t ddp_manager_init(void)
     s_status.last_error = ESP_OK;
     ESP_LOGI(TAG, "DDP %s: transports=0x%02x start=%" PRIu32 " policy=%u "
                   "frame_timeout=%u source_timeout=%u output=%" PRIu32
-                  " bytes, framebuffer=%u bytes, coverage=%u bytes, no PSRAM required",
+                  " bytes, framebuffers=%u bytes, coverage=%u bytes, no PSRAM required",
              s_runtime_config.enabled ? "enabled" : "disabled", s_runtime_config.transports,
              s_runtime_config.start_channel, s_runtime_config.frame_policy,
              s_runtime_config.frame_timeout_ms, s_runtime_config.source_timeout_ms,
-             s_status.output_bytes, (unsigned)s_frame_length, (unsigned)s_coverage_length);
+             s_status.output_bytes,
+             (unsigned)(s_frame_length * (s_runtime_config.enabled ? 3U : 1U)),
+             (unsigned)s_coverage_length);
     return ESP_OK;
 }
 
@@ -598,7 +675,20 @@ void ddp_manager_start_when_network_ready(void)
     if (!s_runtime_config.enabled || s_monitor_task != NULL) {
         return;
     }
+
+    if (xTaskCreate(output_task, "ddp_output", DDP_OUTPUT_TASK_STACK_SIZE, NULL,
+                    DDP_OUTPUT_TASK_PRIORITY, &s_output_task) != pdPASS) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_status.state = DDP_MANAGER_ERROR;
+        s_status.last_error = ESP_ERR_NO_MEM;
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(TAG, "Failed to create DDP output task");
+        return;
+    }
+
     if (xTaskCreate(monitor_task, "ddp_manager", 4096, NULL, 5, &s_monitor_task) != pdPASS) {
+        vTaskDelete(s_output_task);
+        s_output_task = NULL;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.state = DDP_MANAGER_ERROR;
         s_status.last_error = ESP_ERR_NO_MEM;
