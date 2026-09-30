@@ -1,9 +1,0 @@
-menu "Aether Light Configuration"
-
-    config AETHER_LIGHT_EXAMPLE
-        bool "Enable example option"
-        default n
-        help
-            Placeholder option for Aether Light project-specific configuration.
-
-endmenu

@@ -3,12 +3,10 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
-#include "sdkconfig.h"
 
 #define ULTRALED_NVS_NAMESPACE "ultraled"
 #define ULTRALED_NVS_KEY        "config"
@@ -46,6 +44,13 @@ static ultraled_manager_config_t s_config;
 static ultraled_manager_state_t s_state = ULTRALED_MANAGER_DISABLED;
 static esp_err_t s_last_error = ESP_OK;
 
+static const int s_allowed_gpios[ULTRALED_MAX_CHANNELS] = {
+    2, 3, 4, 5, 6, 21, 22, 32,
+};
+
+_Static_assert(sizeof(s_allowed_gpios) / sizeof(s_allowed_gpios[0]) == ULTRALED_MAX_CHANNELS,
+               "The board must define one GPIO for every UltraLED channel");
+
 static void set_default_config(ultraled_manager_config_t *config)
 {
     memset(config, 0, sizeof(*config));
@@ -54,30 +59,25 @@ static void set_default_config(ultraled_manager_config_t *config)
     config->channel_count = 1;
 
     for (size_t channel = 0; channel < ULTRALED_MAX_CHANNELS; ++channel) {
-        config->channels[channel].gpio_num = 10 + (int)channel;
+        config->channels[channel].gpio_num = s_allowed_gpios[channel];
         config->channels[channel].led_count = 60;
         config->channels[channel].color_order = ULTRALED_COLOR_ORDER_MODEL_DEFAULT;
         config->channels[channel].brightness_percent = 100;
     }
 }
 
-static bool gpio_is_used_by_ethernet(int gpio_num)
+const int *ultraled_manager_get_allowed_gpios(size_t *count)
 {
-    static const int ethernet_gpios[] = {
-        CONFIG_NETWORK_MANAGER_ETH_MDC_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_MDIO_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_PHY_RST_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_TX_EN_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_TXD0_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_TXD1_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_CRS_DV_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_RXD0_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_RXD1_GPIO,
-        CONFIG_NETWORK_MANAGER_ETH_RMII_CLK_GPIO,
-    };
+    if (count != NULL) {
+        *count = sizeof(s_allowed_gpios) / sizeof(s_allowed_gpios[0]);
+    }
+    return s_allowed_gpios;
+}
 
-    for (size_t i = 0; i < sizeof(ethernet_gpios) / sizeof(ethernet_gpios[0]); ++i) {
-        if (gpio_num == ethernet_gpios[i]) {
+bool ultraled_manager_is_gpio_allowed(int gpio_num)
+{
+    for (size_t i = 0; i < sizeof(s_allowed_gpios) / sizeof(s_allowed_gpios[0]); ++i) {
+        if (gpio_num == s_allowed_gpios[i]) {
             return true;
         }
     }
@@ -93,7 +93,7 @@ esp_err_t ultraled_manager_validate_config(const ultraled_manager_config_t *conf
 
     for (size_t channel = 0; channel < config->channel_count; ++channel) {
         const ultraled_manager_channel_config_t *channel_config = &config->channels[channel];
-        if (!GPIO_IS_VALID_OUTPUT_GPIO(channel_config->gpio_num) || gpio_is_used_by_ethernet(channel_config->gpio_num) ||
+        if (!ultraled_manager_is_gpio_allowed(channel_config->gpio_num) ||
             channel_config->led_count == 0 ||
             channel_config->led_count > ULTRALED_MANAGER_MAX_PIXELS_PER_CHANNEL ||
             channel_config->color_order < ULTRALED_COLOR_ORDER_MODEL_DEFAULT ||

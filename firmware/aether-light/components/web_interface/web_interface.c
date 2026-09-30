@@ -1,6 +1,7 @@
 #include "web_interface.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -9,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "ddp_manager.h"
 #include "esp_chip_info.h"
@@ -18,14 +21,18 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "firmware_version.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "network_manager.h"
+#include "sdcard_manager.h"
 #include "sdkconfig.h"
 #include "ultraled_manager.h"
 
 #define MAX_FORM_BODY_SIZE 2048
+#define FILE_IO_BUFFER_SIZE 8192
+#define FILE_PATH_SIZE (SDCARD_MANAGER_MAX_FILENAME + 32)
 
 static const char *TAG = "web_interface";
 
@@ -248,17 +255,12 @@ static void html_escape_copy(char *dst, size_t dst_len, const char *src)
 
 static esp_err_t send_chunkf(httpd_req_t *req, const char *format, ...)
 {
-    char stack_buffer[768];
     va_list args;
     va_start(args, format);
-    int required = vsnprintf(stack_buffer, sizeof(stack_buffer), format, args);
+    int required = vsnprintf(NULL, 0, format, args);
     va_end(args);
     if (required < 0) {
         return ESP_FAIL;
-    }
-
-    if ((size_t)required < sizeof(stack_buffer)) {
-        return httpd_resp_send_chunk(req, stack_buffer, required);
     }
 
     char *buffer = malloc((size_t)required + 1);
@@ -289,14 +291,15 @@ static esp_err_t begin_page(httpd_req_t *req, const char *title, const char *act
         "nav{display:flex;gap:8px;flex-wrap:wrap}nav a{color:#d4d4d4;text-decoration:none;padding:8px 12px;border:1px solid #2b2b2b;border-radius:10px;background:#090909}nav a:hover{border-color:#666;color:#fff}nav a.active{background:#fff;color:#000;border-color:#fff;font-weight:700}"
         ".card{background:#090909;border:1px solid #262626;border-radius:16px;padding:20px;margin:16px 0;box-shadow:0 16px 40px rgba(255,255,255,.025)}"
         "h2,h3{margin:0 0 12px}label{display:block;margin:12px 0 6px}input,select{width:100%%;padding:10px 12px;border-radius:10px;border:1px solid #363636;background:#000;color:#f5f5f5}input:focus,select:focus{outline:2px solid #737373;outline-offset:1px}"
-        "input[type=checkbox]{width:auto;margin-right:8px}button{margin-top:16px;padding:10px 16px;border:1px solid #fff;border-radius:10px;background:#fff;color:#000;font-weight:700;cursor:pointer}.danger{background:#dc2626;border-color:#dc2626;color:white}"
+        "input[type=checkbox]{width:auto;margin-right:8px}button{margin-top:16px;padding:10px 16px;border:1px solid #fff;border-radius:10px;background:#fff;color:#000;font-weight:700;cursor:pointer}.danger{background:#dc2626;border-color:#dc2626;color:white}.small{margin:0;padding:6px 10px;font-size:.85rem}"
         ".muted{color:#a3a3a3}.warning{color:#fbbf24;font-size:.9rem;margin-top:10px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}"
-        ".kv,.channel{background:#000;border:1px solid #262626;border-radius:12px;padding:12px}.channel{margin-top:12px}.button-link{display:inline-block;margin:12px 0;color:#fff;text-decoration:none;padding:9px 14px;border:1px solid #525252;border-radius:10px;background:#171717}.button-link:hover{border-color:#fff}.network-list{display:grid;gap:8px;margin:12px 0 20px}.network-option{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%%;margin:0;padding:10px 12px;text-align:left;background:#000;color:#fff;border:1px solid #292929}.network-option:hover{border-color:#737373}.network-meta{color:#a3a3a3;font-size:.85rem;white-space:nowrap}.hidden{display:none}@media(max-width:520px){.brand img{width:112px;height:112px}}</style></head><body>"
+        ".kv,.channel{background:#000;border:1px solid #262626;border-radius:12px;padding:12px}.channel{margin-top:12px}.button-link{display:inline-block;margin:12px 0;color:#fff;text-decoration:none;padding:9px 14px;border:1px solid #525252;border-radius:10px;background:#171717}.button-link:hover{border-color:#fff}.network-list{display:grid;gap:8px;margin:12px 0 20px}.network-option{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%%;margin:0;padding:10px 12px;text-align:left;background:#000;color:#fff;border:1px solid #292929}.network-option:hover{border-color:#737373}.network-meta{color:#a3a3a3;font-size:.85rem;white-space:nowrap}.file-list{width:100%%;border-collapse:collapse}.file-list th,.file-list td{padding:10px 8px;border-bottom:1px solid #262626;text-align:left}.file-list th:last-child,.file-list td:last-child{text-align:right}.file-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px}.file-actions form{margin:0}.progress{height:8px;background:#262626;border-radius:8px;overflow:hidden;margin-top:12px}.progress span{display:block;width:0;height:100%%;background:#fff}.hidden{display:none}@media(max-width:620px){.brand img{width:112px;height:112px}.file-list th:nth-child(2),.file-list td:nth-child(2){display:none}.file-actions{flex-direction:column;align-items:flex-end}}</style></head><body>"
         "<header><a class='brand' href='/status' aria-label='Aether Light status'><img src='/logo.jpg' alt='Aether Light'></a><nav>"
         "<a href='/status' class='%s'>Status</a>"
         "<a href='/network' class='%s'>Network</a>"
         "<a href='/led-channels' class='%s'>LED Channels</a>"
         "<a href='/ddp' class='%s'>DDP / xLights</a>"
+        "<a href='/files' class='%s'>Files</a>"
         "<a href='/configuration' class='%s'>Configuration</a>"
         "<a href='/reboot' class='%s'>Reboot</a>"
         "</nav></header><main><h2>%s</h2>",
@@ -305,6 +308,7 @@ static esp_err_t begin_page(httpd_req_t *req, const char *title, const char *act
         strcmp(active_path, "/network") == 0 ? "active" : "",
         strcmp(active_path, "/led-channels") == 0 ? "active" : "",
         strcmp(active_path, "/ddp") == 0 ? "active" : "",
+        strcmp(active_path, "/files") == 0 ? "active" : "",
         strcmp(active_path, "/configuration") == 0 ? "active" : "",
         strcmp(active_path, "/reboot") == 0 ? "active" : "",
         title);
@@ -473,6 +477,26 @@ static esp_err_t logo_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)logo_jpg_start, logo_jpg_end - logo_jpg_start);
 }
 
+static esp_err_t firmware_info_get_handler(httpd_req_t *req)
+{
+    firmware_version_info_t firmware;
+    firmware_version_get_info(&firmware);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = send_chunkf(req,
+        "{\"version\":\"%s\",\"project\":\"%s\",\"secureVersion\":%" PRIu32 ","
+        "\"idfVersion\":\"%s\",\"buildDate\":\"%s\",\"buildTime\":\"%s\","
+        "\"sha256\":\"%s\"}",
+        firmware.version, firmware.project_name, firmware.secure_version,
+        firmware.idf_version, firmware.build_date, firmware.build_time,
+        firmware.app_sha256);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
     char ip[16];
@@ -489,6 +513,8 @@ static esp_err_t status_get_handler(httpd_req_t *req)
 
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
+    firmware_version_info_t firmware;
+    firmware_version_get_info(&firmware);
 
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     size_t internal_total = heap_caps_get_total_size(internal_caps);
@@ -530,6 +556,9 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     if (err == ESP_OK) {
         err = send_chunkf(req,
             "<div class='card'><h3>System</h3><div class='grid'>"
+            "<div class='kv'><div class='muted'>Firmware</div><div>%s</div></div>"
+            "<div class='kv'><div class='muted'>Firmware image</div><div><code>%.12s</code></div></div>"
+            "<div class='kv'><div class='muted'>Built</div><div>%s %s</div></div>"
             "<div class='kv'><div class='muted'>Uptime</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>Last reset</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>CPU</div><div>ESP32-P4 rev v%u.%u &middot; %u cores @ %d MHz</div></div>"
@@ -541,6 +570,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
             "<div class='kv'><div class='muted'>Internal low watermark</div><div>%zu KiB</div></div>"
             "<div class='kv'><div class='muted'>Largest internal block</div><div>%zu KiB</div></div>"
             "</div></div>",
+            firmware.version, firmware.app_sha256, firmware.build_date, firmware.build_time,
             uptime, reset_reason_to_string(esp_reset_reason()),
             (unsigned)(chip_info.revision / 100U), (unsigned)(chip_info.revision % 100U),
             chip_info.cores, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
@@ -772,15 +802,33 @@ static esp_err_t led_channels_get_handler(httpd_req_t *req)
         return err;
     }
 
+    size_t allowed_gpio_count = 0;
+    const int *allowed_gpios = ultraled_manager_get_allowed_gpios(&allowed_gpio_count);
     for (size_t channel = 0; channel < ULTRALED_MAX_CHANNELS; ++channel) {
         const ultraled_manager_channel_config_t *channel_config = &config.channels[channel];
         err = send_chunkf(req,
             "<div class='channel' data-channel='%u'><h3>Channel %u</h3><div class='grid'>"
-            "<div><label for='ch%u_gpio'>Data GPIO</label><input id='ch%u_gpio' name='ch%u_gpio' type='number' value='%d' required></div>"
+            "<div><label for='ch%u_gpio'>Data GPIO</label><select class='gpio-select' id='ch%u_gpio' name='ch%u_gpio' required>",
+            (unsigned)channel, (unsigned)channel,
+            (unsigned)channel, (unsigned)channel, (unsigned)channel);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        for (size_t gpio = 0; gpio < allowed_gpio_count; ++gpio) {
+            err = send_chunkf(req, "<option value='%d' %s>GPIO %d</option>",
+                              allowed_gpios[gpio],
+                              channel_config->gpio_num == allowed_gpios[gpio] ? "selected" : "",
+                              allowed_gpios[gpio]);
+            if (err != ESP_OK) {
+                return err;
+            }
+        }
+
+        err = send_chunkf(req,
+            "</select></div>"
             "<div><label for='ch%u_count'>Pixels</label><input id='ch%u_count' name='ch%u_count' type='number' min='1' max='%d' value='%u' required></div>"
             "<div><label for='ch%u_order'>Color order</label><select id='ch%u_order' name='ch%u_order'>",
-            (unsigned)channel, (unsigned)channel,
-            (unsigned)channel, (unsigned)channel, (unsigned)channel, channel_config->gpio_num,
             (unsigned)channel, (unsigned)channel, (unsigned)channel,
             ULTRALED_MANAGER_MAX_PIXELS_PER_CHANNEL, channel_config->led_count,
             (unsigned)channel, (unsigned)channel, (unsigned)channel);
@@ -810,9 +858,13 @@ static esp_err_t led_channels_get_handler(httpd_req_t *req)
 
     err = send_chunkf(req,
         "<button type='submit'>Save LED Settings and Restart</button></form></div>"
-        "<script>(()=>{const count=document.getElementById('channel_count');const sync=()=>{const n=Number(count.value);"
+        "<script>(()=>{const count=document.getElementById('channel_count');const rows=[...document.querySelectorAll('[data-channel]')];"
+        "const sync=()=>{const n=Number(count.value);"
         "document.querySelectorAll('[data-channel]').forEach((row,i)=>{const active=i<n;row.classList.toggle('hidden',!active);"
-        "row.querySelectorAll('input,select').forEach(field=>field.disabled=!active);});};count.addEventListener('change',sync);sync();})();</script>");
+        "row.querySelectorAll('input,select').forEach(field=>field.disabled=!active);});"
+        "const selects=rows.slice(0,n).map(row=>row.querySelector('.gpio-select'));const used=new Set(selects.map(select=>select.value));"
+        "selects.forEach(select=>[...select.options].forEach(option=>option.disabled=option.value!==select.value&&used.has(option.value)));};"
+        "count.addEventListener('change',sync);rows.forEach(row=>row.querySelector('.gpio-select').addEventListener('change',sync));sync();})();</script>");
     return err == ESP_OK ? end_page(req) : err;
 }
 
@@ -894,7 +946,7 @@ static esp_err_t led_channels_post_handler(httpd_req_t *req)
     err = ultraled_manager_validate_config(&config);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Invalid UltraLED configuration: GPIOs must be unique, output-capable, and not used by Ethernet");
+                            "Invalid UltraLED configuration: GPIOs must be unique and selected from the supported list");
         return err;
     }
 
@@ -1064,6 +1116,327 @@ static esp_err_t ddp_post_handler(httpd_req_t *req)
     return err;
 }
 
+static void format_file_size(uint64_t bytes, char *buffer, size_t buffer_size)
+{
+    static const char *units[] = { "B", "KiB", "MiB", "GiB" };
+    double value = (double)bytes;
+    size_t unit = 0;
+    while (value >= 1024.0 && unit + 1 < sizeof(units) / sizeof(units[0])) {
+        value /= 1024.0;
+        ++unit;
+    }
+    if (unit == 0) {
+        snprintf(buffer, buffer_size, "%" PRIu64 " B", bytes);
+    } else {
+        snprintf(buffer, buffer_size, "%.1f %s", value, units[unit]);
+    }
+}
+
+static void url_encode_component(char *dst, size_t dst_len, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t output = 0;
+    for (size_t input = 0; src[input] != '\0' && output + 1 < dst_len; ++input) {
+        unsigned char character = (unsigned char)src[input];
+        bool unreserved = (character >= 'a' && character <= 'z') ||
+                          (character >= 'A' && character <= 'Z') ||
+                          (character >= '0' && character <= '9') ||
+                          character == '-' || character == '_' || character == '.' || character == '~';
+        if (unreserved) {
+            dst[output++] = (char)character;
+        } else if (output + 3 < dst_len) {
+            dst[output++] = '%';
+            dst[output++] = hex[character >> 4];
+            dst[output++] = hex[character & 0x0f];
+        } else {
+            break;
+        }
+    }
+    dst[output] = '\0';
+}
+
+static esp_err_t get_query_filename(httpd_req_t *req, char filename[SDCARD_MANAGER_MAX_FILENAME + 1])
+{
+    size_t query_length = httpd_req_get_url_query_len(req);
+    if (query_length == 0 || query_length > 1024) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char *query = malloc(query_length + 1);
+    if (query == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = httpd_req_get_url_query_str(req, query, query_length + 1);
+    char encoded[SDCARD_MANAGER_MAX_FILENAME * 3 + 1];
+    if (err == ESP_OK) {
+        err = httpd_query_key_value(query, "name", encoded, sizeof(encoded));
+    }
+    free(query);
+    if (err != ESP_OK || !url_decode_component(filename, SDCARD_MANAGER_MAX_FILENAME + 1,
+                                                encoded, strlen(encoded)) ||
+        !sdcard_manager_is_valid_filename(filename)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t files_get_handler(httpd_req_t *req)
+{
+    if (!sdcard_manager_is_mounted()) {
+        sdcard_manager_init();
+    }
+
+    sdcard_manager_status_t status;
+    sdcard_manager_get_status(&status);
+    esp_err_t err = begin_page(req, "Files", "/files");
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (!status.mounted) {
+        err = send_chunkf(req,
+            "<div class='card'><h3>microSD card unavailable</h3>"
+            "<p>Insert a FAT-formatted microSD card, then refresh this page.</p>"
+            "<p class='warning'>Mount error: %s</p><a class='button-link' href='/files'>Retry</a></div>",
+            esp_err_to_name(status.last_error));
+        return err == ESP_OK ? end_page(req) : err;
+    }
+
+    char total[32];
+    char free_space[32];
+    format_file_size(status.total_bytes, total, sizeof(total));
+    format_file_size(status.free_bytes, free_space, sizeof(free_space));
+    err = send_chunkf(req,
+        "<div class='card'><div class='grid'>"
+        "<div class='kv'><div class='muted'>Card</div><div>%s</div></div>"
+        "<div class='kv'><div class='muted'>Capacity</div><div>%s</div></div>"
+        "<div class='kv'><div class='muted'>Free space</div><div>%s</div></div>"
+        "</div></div>"
+        "<div class='card'><h3>Upload file</h3>"
+        "<p class='muted'>Files are stored in the card root. An existing file with the same name will not be overwritten.</p>"
+        "<form id='upload-form'><label for='upload-file'>Choose a file</label>"
+        "<input id='upload-file' type='file' required><button type='submit'>Upload</button>"
+        "<div id='upload-progress' class='progress hidden'><span></span></div>"
+        "<p id='upload-message' class='muted'></p></form></div>"
+        "<div class='card'><h3>Stored files</h3>",
+        status.card_name[0] == '\0' ? "microSD" : status.card_name, total, free_space);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    DIR *directory = opendir(sdcard_manager_mount_path());
+    if (directory == NULL) {
+        err = send_chunkf(req, "<p class='warning'>Could not read the card directory.</p></div>");
+    } else {
+        err = send_chunkf(req, "<table class='file-list'><thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead><tbody>");
+        size_t file_count = 0;
+        struct dirent *entry;
+        while (err == ESP_OK && (entry = readdir(directory)) != NULL) {
+            if (!sdcard_manager_is_valid_filename(entry->d_name)) {
+                continue;
+            }
+            char path[FILE_PATH_SIZE];
+            struct stat file_stat;
+            if (sdcard_manager_make_path(entry->d_name, path, sizeof(path)) != ESP_OK ||
+                stat(path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+                continue;
+            }
+
+            char escaped_name[SDCARD_MANAGER_MAX_FILENAME * 6 + 1];
+            char encoded_name[SDCARD_MANAGER_MAX_FILENAME * 3 + 1];
+            char size[32];
+            html_escape_copy(escaped_name, sizeof(escaped_name), entry->d_name);
+            url_encode_component(encoded_name, sizeof(encoded_name), entry->d_name);
+            format_file_size((uint64_t)file_stat.st_size, size, sizeof(size));
+            err = send_chunkf(req,
+                "<tr><td>%s</td><td>%s</td><td><div class='file-actions'>"
+                "<a class='button-link small' href='/files/download?name=%s'>Download</a>"
+                "<form method='post' action='/files/delete' onsubmit=\"return confirm('Delete this file?')\">"
+                "<input type='hidden' name='name' value='%s'><button class='danger small' type='submit'>Delete</button>"
+                "</form></div></td></tr>",
+                escaped_name, size, encoded_name, escaped_name);
+            ++file_count;
+        }
+        closedir(directory);
+        if (err == ESP_OK && file_count == 0) {
+            err = send_chunkf(req, "<tr><td colspan='3' class='muted'>No files on the card.</td></tr>");
+        }
+        if (err == ESP_OK) {
+            err = send_chunkf(req, "</tbody></table></div>");
+        }
+    }
+
+    if (err == ESP_OK) {
+        err = send_chunkf(req,
+            "<script>(()=>{const form=document.getElementById('upload-form');const input=document.getElementById('upload-file');"
+            "const progress=document.getElementById('upload-progress');const bar=progress.querySelector('span');const message=document.getElementById('upload-message');"
+            "form.addEventListener('submit',event=>{event.preventDefault();const file=input.files[0];if(!file)return;"
+            "const request=new XMLHttpRequest();request.open('POST','/files/upload?name='+encodeURIComponent(file.name));"
+            "progress.classList.remove('hidden');bar.style.width='0';message.textContent='Uploading '+file.name+'…';"
+            "request.upload.onprogress=e=>{if(e.lengthComputable)bar.style.width=(e.loaded/e.total*100)+'%%';};"
+            "request.onload=()=>{if(request.status>=200&&request.status<300){message.textContent='Upload complete.';location.reload();}"
+            "else{message.textContent=request.responseText||('Upload failed ('+request.status+').');}};"
+            "request.onerror=()=>{message.textContent='Upload failed: network connection lost.';};request.send(file);});})();</script>");
+    }
+    return err == ESP_OK ? end_page(req) : err;
+}
+
+static esp_err_t file_upload_post_handler(httpd_req_t *req)
+{
+    char filename[SDCARD_MANAGER_MAX_FILENAME + 1];
+    if (get_query_filename(req, filename) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!sdcard_manager_is_mounted()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "microSD card is unavailable");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char destination[FILE_PATH_SIZE];
+    if (sdcard_manager_make_path(filename, destination, sizeof(destination)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Filename is too long");
+        return ESP_ERR_INVALID_ARG;
+    }
+    struct stat existing;
+    if (stat(destination, &existing) == 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "A file with that name already exists");
+    }
+
+    sdcard_manager_status_t status;
+    sdcard_manager_get_status(&status);
+    if ((uint64_t)req->content_len > status.free_bytes) {
+        httpd_resp_set_status(req, "507 Insufficient Storage");
+        return httpd_resp_sendstr(req, "Not enough free space on the microSD card");
+    }
+
+    char temporary[FILE_PATH_SIZE];
+    snprintf(temporary, sizeof(temporary), "%s/.aether-upload.tmp", sdcard_manager_mount_path());
+    unlink(temporary);
+    FILE *file = fopen(temporary, "wb");
+    if (file == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not create the upload file");
+        return ESP_FAIL;
+    }
+
+    char *buffer = malloc(FILE_IO_BUFFER_SIZE);
+    if (buffer == NULL) {
+        fclose(file);
+        unlink(temporary);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not enough memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t remaining = req->content_len;
+    esp_err_t result = ESP_OK;
+    while (remaining > 0) {
+        size_t requested = remaining < FILE_IO_BUFFER_SIZE ? remaining : FILE_IO_BUFFER_SIZE;
+        int received = httpd_req_recv(req, buffer, requested);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0 || fwrite(buffer, 1, (size_t)received, file) != (size_t)received) {
+            result = ESP_FAIL;
+            break;
+        }
+        remaining -= (size_t)received;
+    }
+    free(buffer);
+    if (result == ESP_OK && (fflush(file) != 0 || fsync(fileno(file)) != 0)) {
+        result = ESP_FAIL;
+    }
+    if (fclose(file) != 0) {
+        result = ESP_FAIL;
+    }
+    if (result == ESP_OK && rename(temporary, destination) != 0) {
+        result = ESP_FAIL;
+    }
+    if (result != ESP_OK) {
+        unlink(temporary);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed while writing to the microSD card");
+        return result;
+    }
+
+    ESP_LOGI(TAG, "Uploaded %s (%u bytes)", filename, (unsigned)req->content_len);
+    httpd_resp_set_status(req, "201 Created");
+    return httpd_resp_sendstr(req, "Upload complete");
+}
+
+static esp_err_t file_download_get_handler(httpd_req_t *req)
+{
+    char filename[SDCARD_MANAGER_MAX_FILENAME + 1];
+    char path[FILE_PATH_SIZE];
+    if (get_query_filename(req, filename) != ESP_OK ||
+        sdcard_manager_make_path(filename, path, sizeof(path)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+    char disposition[SDCARD_MANAGER_MAX_FILENAME + 32];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", filename);
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char *buffer = malloc(FILE_IO_BUFFER_SIZE);
+    if (buffer == NULL) {
+        fclose(file);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not enough memory");
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = ESP_OK;
+    size_t count;
+    while ((count = fread(buffer, 1, FILE_IO_BUFFER_SIZE, file)) > 0) {
+        err = httpd_resp_send_chunk(req, buffer, count);
+        if (err != ESP_OK) {
+            break;
+        }
+    }
+    if (ferror(file)) {
+        err = ESP_FAIL;
+    }
+    free(buffer);
+    fclose(file);
+    return err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : err;
+}
+
+static esp_err_t file_delete_post_handler(httpd_req_t *req)
+{
+    char *body = NULL;
+    esp_err_t err = receive_form_body(req, &body);
+    if (err != ESP_OK) {
+        return err;
+    }
+    char filename[SDCARD_MANAGER_MAX_FILENAME + 1];
+    if (!form_get_value(body, "name", filename, sizeof(filename)) ||
+        !sdcard_manager_is_valid_filename(filename)) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+        return ESP_ERR_INVALID_ARG;
+    }
+    free(body);
+
+    char path[FILE_PATH_SIZE];
+    struct stat file_stat;
+    if (sdcard_manager_make_path(filename, path, sizeof(path)) != ESP_OK ||
+        stat(path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (unlink(path) != 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not delete the file");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Deleted %s", filename);
+    return redirect_to(req, "/files");
+}
+
 static esp_err_t configuration_get_handler(httpd_req_t *req)
 {
     ultraled_manager_config_t config;
@@ -1142,7 +1515,8 @@ static esp_err_t start_http_server(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = CONFIG_WEB_INTERFACE_HTTP_PORT;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
+    config.stack_size = 8192;
 
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -1154,6 +1528,7 @@ static esp_err_t start_http_server(void)
         { .uri = "/", .method = HTTP_GET, .handler = root_get_handler },
         { .uri = "/logo.jpg", .method = HTTP_GET, .handler = logo_get_handler },
         { .uri = "/favicon.ico", .method = HTTP_GET, .handler = logo_get_handler },
+        { .uri = "/api/firmware", .method = HTTP_GET, .handler = firmware_info_get_handler },
         { .uri = "/status", .method = HTTP_GET, .handler = status_get_handler },
         { .uri = "/network", .method = HTTP_GET, .handler = network_get_handler },
         { .uri = "/network", .method = HTTP_POST, .handler = network_post_handler },
@@ -1162,6 +1537,10 @@ static esp_err_t start_http_server(void)
         { .uri = "/led-channels", .method = HTTP_POST, .handler = led_channels_post_handler },
         { .uri = "/ddp", .method = HTTP_GET, .handler = ddp_get_handler },
         { .uri = "/ddp", .method = HTTP_POST, .handler = ddp_post_handler },
+        { .uri = "/files", .method = HTTP_GET, .handler = files_get_handler },
+        { .uri = "/files/upload", .method = HTTP_POST, .handler = file_upload_post_handler },
+        { .uri = "/files/download", .method = HTTP_GET, .handler = file_download_get_handler },
+        { .uri = "/files/delete", .method = HTTP_POST, .handler = file_delete_post_handler },
         { .uri = "/configuration", .method = HTTP_GET, .handler = configuration_get_handler },
         { .uri = "/reboot", .method = HTTP_GET, .handler = reboot_get_handler },
         { .uri = "/reboot", .method = HTTP_POST, .handler = reboot_post_handler },

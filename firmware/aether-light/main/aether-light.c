@@ -1,6 +1,8 @@
 #include "esp_log.h"
 #include "ddp_manager.h"
+#include "firmware_version.h"
 #include "network_manager.h"
+#include "sdcard_manager.h"
 #include "ultraled_manager.h"
 #include "web_interface.h"
 
@@ -8,7 +10,15 @@ static const char *TAG = "al";
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Bringing up ESP32-P4");
+    firmware_version_info_t firmware;
+    firmware_version_get_info(&firmware);
+    ESP_LOGI(TAG, "Bringing up %s firmware %s (SHA-256 %.12s)",
+             firmware.project_name, firmware.version, firmware.app_sha256);
+
+    esp_err_t sdcard_err = sdcard_manager_init();
+    if (sdcard_err != ESP_OK) {
+        ESP_LOGW(TAG, "SD card is not available: %s", esp_err_to_name(sdcard_err));
+    }
 
     ESP_ERROR_CHECK(network_manager_init());
 

@@ -9,6 +9,7 @@ managed_components/
 .vscode/
 
 # Generated logs and caches
+.cache/
 .pytest_cache/
 *.log
 
