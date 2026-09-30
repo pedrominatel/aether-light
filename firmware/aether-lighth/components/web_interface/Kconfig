@@ -1,8 +1,0 @@
-menu "Web Interface"
-
-    config WEB_INTERFACE_HTTP_PORT
-        int "HTTP server port"
-        range 1 65535
-        default 80
-
-endmenu

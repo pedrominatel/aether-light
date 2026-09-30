@@ -27,6 +27,7 @@ Configuration and runtime information are available from a web interface hosted 
 - DHCP or static IPv4 configuration
 - Nearby Wi-Fi network scanning
 - Browser-based status, configuration, diagnostics, and reboot controls
+- microSD file manager with streamed upload, download, and delete operations
 - Versioned configuration storage in NVS
 
 ## Hardware and software requirements
@@ -50,6 +51,11 @@ cd firmware/aether-light
 idf.py set-target esp32p4
 idf.py build
 ```
+
+The release version is defined in `firmware/aether-light/version.txt` as
+`MAJOR.MINOR.PATCH`. Update it before creating a release build. The current
+version and image identity are available from the device at
+`http://<device-ip>/api/firmware`.
 
 Flash the board and open the serial monitor, replacing the port with the one used by your board:
 
@@ -111,10 +117,11 @@ DDP data is mapped as contiguous RGB bytes across the configured LED channels, s
 
 | Page | Purpose |
 | --- | --- |
-| **Status** | Shows network, LED, DDP, uptime, CPU, task, reset, and memory state |
+| **Status** | Shows firmware identity, network, LED, DDP, uptime, CPU, task, reset, and memory state |
 | **Network** | Configures DHCP/static IPv4 and Wi-Fi fallback credentials |
 | **LED Channels** | Configures the LED model and output channels |
 | **DDP / xLights** | Configures DDP transport, channel mapping, frame policy, and timeouts |
+| **Files** | Lists microSD files and provides upload, download, and delete controls |
 | **Configuration** | Summarizes stored settings and firmware limits |
 | **Reboot** | Restarts the controller |
 
@@ -130,7 +137,9 @@ DDP data is mapped as contiguous RGB bytes across the configured LED channels, s
         ├── components/
         │   ├── ddp/                 DDP v1 transport and packet handling
         │   ├── ddp_manager/         Frame assembly and LED mapping
+        │   ├── firmware_version/    Release identity and version comparison
         │   ├── network_manager/     Ethernet, Wi-Fi, and IPv4 settings
+        │   ├── sdcard_manager/      Board microSD mounting and storage status
         │   ├── ultraled_manager/    LED configuration and driver lifecycle
         │   └── web_interface/       Embedded configuration website
         ├── sdkconfig.defaults       Shared project defaults

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -37,6 +38,10 @@ esp_err_t ultraled_manager_init(void);
 
 /* Validates application and hardware constraints without changing NVS. */
 esp_err_t ultraled_manager_validate_config(const ultraled_manager_config_t *config);
+
+/* Returns the fixed, board-specific GPIO allowlist used by validation and the UI. */
+const int *ultraled_manager_get_allowed_gpios(size_t *count);
+bool ultraled_manager_is_gpio_allowed(int gpio_num);
 
 /* Persists a validated configuration. It is applied on the next boot. */
 esp_err_t ultraled_manager_save_config(const ultraled_manager_config_t *config);
