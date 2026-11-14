@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "board_hal.h"
 #include "ddp_manager.h"
 #include "esp_chip_info.h"
 #include "esp_heap_caps.h"
@@ -30,7 +31,7 @@
 #include "sdkconfig.h"
 #include "ultraled_manager.h"
 
-#define MAX_FORM_BODY_SIZE 2048
+#define MAX_FORM_BODY_SIZE 4096
 #define FILE_IO_BUFFER_SIZE 8192
 #define FILE_PATH_SIZE (SDCARD_MANAGER_MAX_FILENAME + 32)
 
@@ -561,7 +562,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
             "<div class='kv'><div class='muted'>Built</div><div>%s %s</div></div>"
             "<div class='kv'><div class='muted'>Uptime</div><div>%s</div></div>"
             "<div class='kv'><div class='muted'>Last reset</div><div>%s</div></div>"
-            "<div class='kv'><div class='muted'>CPU</div><div>ESP32-P4 rev v%u.%u &middot; %u cores @ %d MHz</div></div>"
+            "<div class='kv'><div class='muted'>CPU</div><div>%s rev v%u.%u &middot; %u cores @ %d MHz</div></div>"
             "<div class='kv'><div class='muted'>FreeRTOS tasks</div><div>%u</div></div>"
             "<div class='kv'><div class='muted'>ESP-IDF</div><div>%s</div></div>"
             "</div></div>"
@@ -572,6 +573,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
             "</div></div>",
             firmware.version, firmware.app_sha256, firmware.build_date, firmware.build_time,
             uptime, reset_reason_to_string(esp_reset_reason()),
+            board_hal_get_name(),
             (unsigned)(chip_info.revision / 100U), (unsigned)(chip_info.revision % 100U),
             chip_info.cores, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
             (unsigned)uxTaskGetNumberOfTasks(), esp_get_idf_version(),
@@ -909,7 +911,7 @@ static esp_err_t led_channels_post_handler(httpd_req_t *req)
     config.led_model = (ultraled_model_t)value;
 
     if (!form_get_long(body, "channel_count", &value) || value < 1 || value > ULTRALED_MAX_CHANNELS) {
-        return invalid_led_form(req, body, "Channel count must be between 1 and 8");
+        return invalid_led_form(req, body, "Channel count must be between 1 and 16");
     }
     config.channel_count = (uint8_t)value;
 

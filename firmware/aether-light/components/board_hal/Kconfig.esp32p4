@@ -1,0 +1,112 @@
+menu "ESP32-P4-Function-EV-Board"
+
+    config AETHER_HAL_P4_ETH_PHY_ADDR
+        int "IP101 PHY address"
+        range 0 31
+        default 1
+
+    config AETHER_HAL_P4_ETH_MDC_GPIO
+        int "Ethernet MDC GPIO"
+        default 31
+
+    config AETHER_HAL_P4_ETH_MDIO_GPIO
+        int "Ethernet MDIO GPIO"
+        default 52
+
+    config AETHER_HAL_P4_ETH_PHY_RST_GPIO
+        int "Ethernet PHY reset GPIO"
+        default 51
+
+    config AETHER_HAL_P4_ETH_RMII_TX_EN_GPIO
+        int "RMII TX_EN GPIO"
+        default 49
+
+    config AETHER_HAL_P4_ETH_RMII_TXD0_GPIO
+        int "RMII TXD0 GPIO"
+        default 34
+
+    config AETHER_HAL_P4_ETH_RMII_TXD1_GPIO
+        int "RMII TXD1 GPIO"
+        default 35
+
+    config AETHER_HAL_P4_ETH_RMII_CRS_DV_GPIO
+        int "RMII CRS_DV GPIO"
+        default 28
+
+    config AETHER_HAL_P4_ETH_RMII_RXD0_GPIO
+        int "RMII RXD0 GPIO"
+        default 29
+
+    config AETHER_HAL_P4_ETH_RMII_RXD1_GPIO
+        int "RMII RXD1 GPIO"
+        default 30
+
+    config AETHER_HAL_P4_ETH_RMII_CLK_GPIO
+        int "RMII REF_CLK input GPIO"
+        default 50
+
+    config AETHER_HAL_P4_LED_GPIO_0
+        int "LED channel 1 GPIO"
+        default 2
+
+    config AETHER_HAL_P4_LED_GPIO_1
+        int "LED channel 2 GPIO"
+        default 3
+
+    config AETHER_HAL_P4_LED_GPIO_2
+        int "LED channel 3 GPIO"
+        default 4
+
+    config AETHER_HAL_P4_LED_GPIO_3
+        int "LED channel 4 GPIO"
+        default 5
+
+    config AETHER_HAL_P4_LED_GPIO_4
+        int "LED channel 5 GPIO"
+        default 6
+
+    config AETHER_HAL_P4_LED_GPIO_5
+        int "LED channel 6 GPIO"
+        default 21
+
+    config AETHER_HAL_P4_LED_GPIO_6
+        int "LED channel 7 GPIO"
+        default 22
+
+    config AETHER_HAL_P4_LED_GPIO_7
+        int "LED channel 8 GPIO"
+        default 32
+
+    config AETHER_HAL_P4_LED_GPIO_8
+        int "LED channel 9 GPIO"
+        default 14
+
+    config AETHER_HAL_P4_LED_GPIO_9
+        int "LED channel 10 GPIO"
+        default 15
+
+    config AETHER_HAL_P4_LED_GPIO_10
+        int "LED channel 11 GPIO"
+        default 16
+
+    config AETHER_HAL_P4_LED_GPIO_11
+        int "LED channel 12 GPIO"
+        default 17
+
+    config AETHER_HAL_P4_LED_GPIO_12
+        int "LED channel 13 GPIO"
+        default 18
+
+    config AETHER_HAL_P4_LED_GPIO_13
+        int "LED channel 14 GPIO"
+        default 24
+
+    config AETHER_HAL_P4_LED_GPIO_14
+        int "LED channel 15 GPIO"
+        default 25
+
+    config AETHER_HAL_P4_LED_GPIO_15
+        int "LED channel 16 GPIO"
+        default 33
+
+endmenu

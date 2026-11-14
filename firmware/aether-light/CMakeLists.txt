@@ -9,4 +9,5 @@ if(NOT PROJECT_VER MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+idf_build_set_property(DEPENDENCIES_LOCK dependencies.lock.${IDF_TARGET})
 project(aether-light)

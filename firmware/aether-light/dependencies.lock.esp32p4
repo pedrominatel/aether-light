@@ -119,7 +119,7 @@ dependencies:
       type: service
     version: 1.0.4
   espressif/esp_hosted:
-    component_hash: f1792f36ef9a637adf2faa2662f3c4500b07f3d2ba65c25f3ed4824490ba59f9
+    component_hash: 0dbfbec0c1cbb1bb854b16aa66457bb6b70debf677903134c769ef5874669803
     dependencies:
     - name: idf
       require: private
@@ -127,7 +127,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.12.13
+    version: 2.13.1
   espressif/esp_ipa:
     component_hash: 31003e536f0d26158e10d7fcf2448b6377ce1148518287d0f34ed3b6c942c6d8
     dependencies:
@@ -221,7 +221,7 @@ dependencies:
       type: service
     version: 2.9.0
   espressif/esp_sccb_intf:
-    component_hash: eb6a7d5c992f09583c163b2e3f5e95a0fdc87a2d9f8e026f3e59153935553889
+    component_hash: fcf118cd29a1caaf3b09bacd99975bc035c996b470474dfb950202c16e06d7b5
     dependencies:
     - name: idf
       require: private
@@ -229,7 +229,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.0.9
+    version: 1.0.0
   espressif/esp_serial_slave_link:
     component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
     dependencies:
@@ -318,7 +318,7 @@ dependencies:
     - esp32s31
     version: 1.1.0
   espressif/usb:
-    component_hash: 6c2cff118141dbbca181d0d27d71801fdddfc78f7ac03ae43f6e5a8cbd89cb99
+    component_hash: 5bcbf1bde509faef0750bbae5595b38e91cbbbd9aa0e3d308be64f9279b78aa0
     dependencies:
     - name: idf
       require: private
@@ -333,7 +333,7 @@ dependencies:
     - esp32p4
     - esp32h4
     - linux
-    version: 1.5.0
+    version: 1.6.1
   espressif/usb_host_uvc:
     component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
     dependencies:
@@ -406,24 +406,36 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 9.6.0~1
-  pedrominatel/ultraled:
-    component_hash: bb885b92d602b39d22ae9d0224245ca91169daa3af831f393ff3821261c840fa
+  pedrominatel/ddp:
+    component_hash: 5bd308a0baa8ecf7eb5370fb8aefd1e07c14143ae85f85cc03ba0d954aade38d
     dependencies:
     - name: idf
       require: private
-      version: '>=6.0'
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.1.0
+  pedrominatel/ultraled:
+    component_hash: c075aab7fe7113e0ea82ae597ee245208ce4cbd02ef382d38e178b2c557bacbf
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=6.1'
     source:
       registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32p4
-    version: 0.3.0
+    - esp32s31
+    version: 0.4.0
 direct_dependencies:
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_hosted
 - espressif/esp_wifi_remote
 - espressif/ip101
+- pedrominatel/ddp
 - pedrominatel/ultraled
-manifest_hash: 50597b88d498cbfcf185ac3a273a12b979a6c0911983976d90b9d0375b71217b
+manifest_hash: 0b9b2cf6d131e905bfc90651033fb4419addb8852d136f588bffce44c9766aef
 target: esp32p4
 version: 3.0.0
