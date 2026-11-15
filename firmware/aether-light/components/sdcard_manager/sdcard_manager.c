@@ -5,7 +5,7 @@
 #include <string.h>
 #include <strings.h>
 
-#include "bsp/esp32_p4_function_ev_board.h"
+#include "board_hal.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
@@ -42,17 +42,17 @@ esp_err_t sdcard_manager_init(void)
         return ESP_OK;
     }
 
-    s_last_error = bsp_sdcard_mount();
+    s_last_error = board_hal_sdcard_mount();
     s_mounted = s_last_error == ESP_OK;
     if (s_mounted) {
-        sdmmc_card_t *card = bsp_sdcard_get_handle();
+        sdmmc_card_t *card = board_hal_sdcard_get_handle();
         ESP_LOGI(TAG, "Mounted microSD card%s%s at %s",
-                 card != NULL ? " " : "", card != NULL ? card->cid.name : "", BSP_SD_MOUNT_POINT);
+                 card != NULL ? " " : "", card != NULL ? card->cid.name : "", board_hal_sdcard_mount_path());
     } else {
         ESP_LOGW(TAG, "microSD card is unavailable: %s", esp_err_to_name(s_last_error));
         /* The BSP allocates its LDO handle before probing the card. Clean it up
          * after a failed probe so a later page refresh can retry mounting. */
-        bsp_sdcard_unmount();
+        board_hal_sdcard_unmount();
     }
     esp_err_t result = s_last_error;
     unlock_manager();
@@ -78,11 +78,11 @@ void sdcard_manager_get_status(sdcard_manager_status_t *status)
     status->mounted = s_mounted;
     status->last_error = s_last_error;
     if (s_mounted) {
-        sdmmc_card_t *card = bsp_sdcard_get_handle();
+        sdmmc_card_t *card = board_hal_sdcard_get_handle();
         if (card != NULL) {
             snprintf(status->card_name, sizeof(status->card_name), "%s", card->cid.name);
         }
-        esp_err_t info_error = esp_vfs_fat_info(BSP_SD_MOUNT_POINT, &status->total_bytes, &status->free_bytes);
+        esp_err_t info_error = esp_vfs_fat_info(board_hal_sdcard_mount_path(), &status->total_bytes, &status->free_bytes);
         if (info_error != ESP_OK) {
             ESP_LOGW(TAG, "Could not read microSD capacity: %s", esp_err_to_name(info_error));
         }
@@ -120,11 +120,11 @@ esp_err_t sdcard_manager_make_path(const char *filename, char *path, size_t path
     if (path == NULL || !sdcard_manager_is_valid_filename(filename)) {
         return ESP_ERR_INVALID_ARG;
     }
-    int required = snprintf(path, path_size, "%s/%s", BSP_SD_MOUNT_POINT, filename);
+    int required = snprintf(path, path_size, "%s/%s", board_hal_sdcard_mount_path(), filename);
     return required < 0 || (size_t)required >= path_size ? ESP_ERR_INVALID_SIZE : ESP_OK;
 }
 
 const char *sdcard_manager_mount_path(void)
 {
-    return BSP_SD_MOUNT_POINT;
+    return board_hal_sdcard_mount_path();
 }

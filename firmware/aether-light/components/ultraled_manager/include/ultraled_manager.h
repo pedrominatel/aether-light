@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #define ULTRALED_MANAGER_MAX_PIXELS_PER_CHANNEL 960
+#define ULTRALED_MANAGER_DEFAULT_BRIGHTNESS_PERCENT 50U
 
 typedef struct {
     int gpio_num;

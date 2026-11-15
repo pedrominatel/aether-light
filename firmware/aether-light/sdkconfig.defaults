@@ -1,9 +1,6 @@
-# ESP32-P4-Function-EV-Board has 16MB of flash.
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
-# ESP-Hosted recommends a 1 kHz FreeRTOS tick to avoid bus-level jitter.
+# Keep application timing identical on both supported targets.
 CONFIG_FREERTOS_HZ=1000
 
 # File manager filenames and concurrent FAT file handles.

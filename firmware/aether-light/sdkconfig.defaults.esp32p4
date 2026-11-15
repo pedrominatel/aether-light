@@ -1,0 +1,9 @@
+# ESP32-P4-Function-EV-Board target settings.
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+
+# ESP-Hosted recommends a 1 kHz FreeRTOS tick to avoid bus-level jitter.
+CONFIG_FREERTOS_HZ=1000

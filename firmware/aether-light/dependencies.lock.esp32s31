@@ -1,0 +1,34 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 6.1.0
+  pedrominatel/ddp:
+    component_hash: 5bd308a0baa8ecf7eb5370fb8aefd1e07c14143ae85f85cc03ba0d954aade38d
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.1.0
+  pedrominatel/ultraled:
+    component_hash: c075aab7fe7113e0ea82ae597ee245208ce4cbd02ef382d38e178b2c557bacbf
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=6.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    - esp32s31
+    version: 0.4.0
+direct_dependencies:
+- pedrominatel/ddp
+- pedrominatel/ultraled
+manifest_hash: 0b9b2cf6d131e905bfc90651033fb4419addb8852d136f588bffce44c9766aef
+target: esp32s31
+version: 3.0.0

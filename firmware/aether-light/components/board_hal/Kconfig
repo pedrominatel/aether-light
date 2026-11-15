@@ -1,0 +1,11 @@
+menu "Aether Light board hardware"
+
+    if IDF_TARGET_ESP32P4
+        rsource "Kconfig.esp32p4"
+    endif
+
+    if IDF_TARGET_ESP32S31
+        rsource "Kconfig.esp32s31"
+    endif
+
+endmenu

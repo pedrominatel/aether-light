@@ -7,7 +7,6 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_eth.h"
-#include "esp_eth_phy_ip101.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "esp_timer.h"
@@ -16,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
+#include "board_hal.h"
 #include "network_manager.h"
 
 static const char *TAG = "network_manager";
@@ -622,50 +622,6 @@ static void eth_fallback_timer_cb(void *arg)
     }
 }
 
-/* ESP32-P4-Function-EV-Board: internal EMAC + IP101 PHY over RMII */
-static esp_err_t eth_init(esp_eth_handle_t *eth_handle_out)
-{
-    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
-    eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
-    esp32_emac_config.smi_gpio.mdc_num = CONFIG_NETWORK_MANAGER_ETH_MDC_GPIO;
-    esp32_emac_config.smi_gpio.mdio_num = CONFIG_NETWORK_MANAGER_ETH_MDIO_GPIO;
-    esp32_emac_config.interface = EMAC_DATA_INTERFACE_RMII;
-    esp32_emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
-    esp32_emac_config.clock_config.rmii.clock_gpio = CONFIG_NETWORK_MANAGER_ETH_RMII_CLK_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.tx_en_num = CONFIG_NETWORK_MANAGER_ETH_RMII_TX_EN_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.txd0_num = CONFIG_NETWORK_MANAGER_ETH_RMII_TXD0_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.txd1_num = CONFIG_NETWORK_MANAGER_ETH_RMII_TXD1_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.crs_dv_num = CONFIG_NETWORK_MANAGER_ETH_RMII_CRS_DV_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.rxd0_num = CONFIG_NETWORK_MANAGER_ETH_RMII_RXD0_GPIO;
-    esp32_emac_config.emac_dataif_gpio.rmii.rxd1_num = CONFIG_NETWORK_MANAGER_ETH_RMII_RXD1_GPIO;
-
-    esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
-    if (mac == NULL) {
-        ESP_LOGE(TAG, "create MAC instance failed");
-        return ESP_FAIL;
-    }
-
-    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
-    phy_config.phy_addr = CONFIG_NETWORK_MANAGER_ETH_PHY_ADDR;
-    phy_config.reset_gpio_num = CONFIG_NETWORK_MANAGER_ETH_PHY_RST_GPIO;
-    esp_eth_phy_t *phy = esp_eth_phy_new_ip101(&phy_config);
-    if (phy == NULL) {
-        ESP_LOGE(TAG, "create PHY instance failed");
-        mac->del(mac);
-        return ESP_FAIL;
-    }
-
-    esp_eth_config_t config = ETH_DEFAULT_CONFIG(mac, phy);
-    esp_eth_handle_t eth_handle = NULL;
-    if (esp_eth_driver_install(&config, &eth_handle) != ESP_OK) {
-        ESP_LOGE(TAG, "Ethernet driver install failed");
-        return ESP_FAIL;
-    }
-
-    *eth_handle_out = eth_handle;
-    return ESP_OK;
-}
-
 esp_err_t network_manager_init(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -693,7 +649,7 @@ esp_err_t network_manager_start(void)
 
     s_state = NETWORK_MANAGER_CONNECTING;
 
-    if (eth_init(&s_eth_handle) != ESP_OK) {
+    if (board_hal_ethernet_install(&s_eth_handle) != ESP_OK) {
         ESP_LOGW(TAG, "Ethernet init failed, falling back to WiFi");
         start_wifi_fallback();
         return ESP_OK;
